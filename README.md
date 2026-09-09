@@ -12,6 +12,7 @@ Implementation has not started yet; technology-stack decisions are still pending
 
 ```text
 docs/                   SC2006 laboratory documentation
+  lab-1/                Requirements, use cases, mock-ups, and critique
 src/red_handed/         Provisional Python application package
   core/                 Monitoring, risk, protection, and runtime state
   detection/            Camera, person detection, and privacy-zone concerns
