@@ -1,1 +1,4 @@
-# TODO: Add project dependencies after technology stack is confirmed.
+# MediaPipe requires the contrib distribution. Install only one cv2 provider.
+opencv-contrib-python>=4.14.0.94,<5
+# Tested Tasks API; avoid an unreviewed minor/major API change.
+mediapipe>=1.0.1,<1.1
