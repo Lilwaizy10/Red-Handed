@@ -6,9 +6,12 @@ from __future__ import annotations
 
 import tkinter as tk
 from tkinter import ttk
-from typing import Callable
 
-from red_handed.core.system_state import CameraStatus, MonitoringStatus, SystemState
+import cv2
+from PIL import Image, ImageTk
+
+from red_handed.core.monitoring import MonitoringController
+from red_handed.core.system_state import CameraStatus, MonitoringStatus
 
 
 class PreviewCanvas(tk.Canvas):
@@ -41,22 +44,31 @@ class PreviewCanvas(tk.Canvas):
 class MainWindow:
     """Present status and monitoring controls."""
 
-    def __init__(self, root: tk.Tk, state: SystemState,
-                 on_start: Callable[[], None] | None = None,
-                 on_stop: Callable[[], None] | None = None) -> None:
+    def __init__(
+        self,
+        root: tk.Tk,
+        controller: MonitoringController,
+    ) -> None:
         self.root = root
-        self.state = state
-        # Callbacks for the controller to connect later.
-        self.on_start = on_start
-        self.on_stop = on_stop
+        self.controller = controller
+        self.state = controller.state
+
+        # Keep one scheduled frame callback so repeated Start cannot create loops.
+        self._frame_after_id: str | None = None
+        self._closed = False
 
         self.monitoring_text = tk.StringVar(value="Inactive")
         self.camera_text = tk.StringVar(value="Checking...")
         self.people_text = tk.StringVar(value="--")
-        self.message_text = tk.StringVar(value="Checking camera availability...")
+        self.message_text = tk.StringVar(
+            value="Checking camera availability..."
+        )
 
         self._configure_window()
         self._build_layout()
+
+        # Closing the window must also release camera and detector resources.
+        self.root.protocol("WM_DELETE_WINDOW", self.close)
 
     def _configure_window(self) -> None:
         self.root.title("Red-Handed")
@@ -112,6 +124,19 @@ class MainWindow:
             controls, text="Stop Monitoring", command=self.stop_monitoring
         )
         self.stop_button.grid(row=0, column=1, sticky="ew", padx=(6, 0))
+                # Allows recovery after reconnecting a camera or fixing permissions.
+        self.retry_button = ttk.Button(
+            controls,
+            text="Retry Camera",
+            command=self.retry_camera,
+        )
+        self.retry_button.grid(
+            row=1,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(8, 0),
+        )
 
         preview_group = ttk.LabelFrame(content, text="Camera Preview", padding=12)
         preview_group.grid(row=4, column=0, sticky="nsew")
@@ -143,30 +168,152 @@ class MainWindow:
         )
         ttk.Label(card, textvariable=value, style="Status.TLabel").pack(anchor="w")
 
+    def initialize(self) -> None:
+        """Check camera availability after Tk has created the dashboard."""
+        self.retry_camera()
+
     def _refresh_status(self) -> None:
-        state = self.state
-        self.monitoring_text.set(state.monitoring_status.value)
-        self.camera_text.set(state.camera_status.value)
+        """Display the controller's latest state and detection result."""
+        self.monitoring_text.set(self.state.monitoring_status.value)
+        self.camera_text.set(self.state.camera_status.value)
+
+        result = self.controller.detection
+        self.people_text.set(
+            "--" if result is None else str(result.person_count)
+        )
+
+        if self.state.camera_error:
+            self.message_text.set(self.state.camera_error)
+        elif self.controller.detection_error:
+            self.message_text.set(self.controller.detection_error)
+        elif self.state.monitoring_status is MonitoringStatus.ACTIVE:
+            self.message_text.set("Monitoring is active.")
+        else:
+            self.message_text.set("Ready. Select Start Monitoring.")
+
         self._refresh_controls()
 
     def _refresh_controls(self) -> None:
-        state = self.state
-        active = state.monitoring_status is MonitoringStatus.ACTIVE
-        available = state.camera_status is CameraStatus.AVAILABLE
+        """Enable only actions that make sense for the current state."""
+        active = self.state.monitoring_status is MonitoringStatus.ACTIVE
+        available = self.state.camera_status is CameraStatus.AVAILABLE
+
         self.start_button.configure(
             state=tk.NORMAL if available and not active else tk.DISABLED
         )
-        self.stop_button.configure(state=tk.NORMAL if active else tk.DISABLED)
+        self.stop_button.configure(
+            state=tk.NORMAL if active else tk.DISABLED
+        )
+        self.retry_button.configure(
+            state=tk.DISABLED if active else tk.NORMAL
+        )
+
+    def retry_camera(self) -> None:
+        """Refresh availability without automatically starting monitoring."""
+        if self._closed:
+            return
+        if self.state.monitoring_status is MonitoringStatus.ACTIVE:
+            return
+
+        available = self.controller.refresh_camera_availability()
+        self.preview.clear(
+            "Camera preview is inactive"
+            if available
+            else "Camera unavailable. Check the connection and select Retry Camera."
+        )
+        self._refresh_status()
 
     def start_monitoring(self) -> None:
-        """FR1.1 - Ask the controller to start monitoring."""
-        if self.on_start is not None:
-            self.on_start()
+        """Start capture and create one frame-update loop."""
+        if self._closed:
+            return
+
+        self._cancel_frame_loop()
+        started = self.controller.start_monitoring()
         self._refresh_status()
 
+        if started:
+            self._update_frame()
+        else:
+            self.preview.clear(
+                self.state.camera_error or "Camera unavailable."
+            )
+
     def stop_monitoring(self) -> None:
-        """FR1.3 - Ask the controller to stop monitoring."""
-        if self.on_stop is not None:
-            self.on_stop()
+        """Cancel future updates, release the camera, and clear stale images."""
+        if self._closed:
+            return
+
+        self._cancel_frame_loop()
+        self.controller.stop_monitoring()
         self.preview.clear("Camera preview is inactive")
         self._refresh_status()
+
+    def _update_frame(self) -> None:
+        """Read, detect, and display one frame before scheduling another."""
+        self._frame_after_id = None
+
+        if self._closed:
+            return
+        if self.state.monitoring_status is not MonitoringStatus.ACTIVE:
+            return
+
+        frame = self.controller.read_frame()
+        self._refresh_status()
+
+        if frame is None:
+            # Camera loss has already stopped monitoring in the controller.
+            self.preview.clear(
+                self.state.camera_error or "Camera preview is inactive"
+            )
+            return
+
+        try:
+            self._show_frame(frame)
+        except Exception as error:
+            # Do not leave the camera running behind a broken preview.
+            self.stop_monitoring()
+            self.message_text.set(f"Camera preview unavailable: {error}")
+            return
+
+        # Tk processes button clicks between callbacks.
+        # 33 ms is a scheduling delay, not a guaranteed 30 FPS rate.
+        self._frame_after_id = self.root.after(33, self._update_frame)
+
+    def _show_frame(self, frame) -> None:
+        """Convert OpenCV's BGR pixels into a Tk-compatible preview image."""
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        image = Image.fromarray(rgb)
+
+        # Fit inside the preview without stretching the image.
+        image.thumbnail(
+            (
+                max(1, self.preview.winfo_width()),
+                max(1, self.preview.winfo_height()),
+            ),
+            Image.Resampling.LANCZOS,
+        )
+
+        photo = ImageTk.PhotoImage(image=image, master=self.root)
+
+        # PreviewCanvas keeps a reference to prevent image garbage collection.
+        self.preview.show_image(photo)
+
+    def _cancel_frame_loop(self) -> None:
+        """Remove the pending callback before stopping or restarting."""
+        if self._frame_after_id is not None:
+            self.root.after_cancel(self._frame_after_id)
+            self._frame_after_id = None
+
+    def close(self) -> None:
+        """Cancel updates and release resources before destroying the window."""
+        if self._closed:
+            return
+
+        self._closed = True
+        self._cancel_frame_loop()
+
+        try:
+            self.controller.close()
+        finally:
+            self.root.destroy()
