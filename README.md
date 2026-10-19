@@ -2,7 +2,7 @@
 
 Red-Handed is a Windows desktop privacy-protection system intended to reduce shoulder-surfing by detecting additional people within a configured privacy zone and activating a selected screen-protection mode.
 
-**Current status:** Round 1 monitoring integration implemented; validation results are recorded in docs/phase1_testing.md.
+**Current status:** Round 2 privacy-zone integration implemented; validation results are recorded in docs/phase2_testing.md.
 
 **Initial target:** 64-bit Windows 10 and Windows 11
 
@@ -29,8 +29,16 @@ Run controller tests:
 .\.venv\Scripts\python.exe -B -m unittest discover -s tests/unit -v
 ```
 
-Round 1 uses synchronous capture and detection, so slow native calls can delay
-the interface. Later-round features are not yet connected.
+The calibration screen supports drawing, saving, and reloading a privacy zone.
+Only the saved zone affects monitoring. An additional face is inside when its
+centre falls within the zone, including the boundary. The largest detected
+face is assumed to be the primary user.
+
+Settings are stored at `%LOCALAPPDATA%\Red-Handed\settings.json`.
+Saving a new zone preserves sensitivity and timing settings.
+
+Capture and detection remain synchronous, so slow native calls can delay the
+interface. Risk timing and screen protection belong to later rounds.
 
 ## Folder structure
 
