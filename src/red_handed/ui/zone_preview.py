@@ -128,7 +128,7 @@ class ZonePreview(tk.Canvas):
         try:
             # (start corner, current corner, 1, 1): the 1, 1 are the "image
             # width/height" because our coordinates are already normalised.
-            self.draft_zone = PrivacyZone.from_points(*self._start, *end, 1, 1)
+            self.draft_zone = PrivacyZone.from_pixels(*self._start, *end, 1, 1)
         except ValueError:
             # PrivacyZone rejects invalid shapes (e.g. zero area when the
             # mouse is still on the start point), so show no draft for now.
