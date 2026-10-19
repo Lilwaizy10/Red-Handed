@@ -14,6 +14,9 @@ from red_handed.core.monitoring import MonitoringController
 from red_handed.core.system_state import CameraStatus, MonitoringStatus
 from red_handed.ui.calibration_view import CalibrationView
 from red_handed.ui.zone_preview import ZonePreview
+from dataclasses import replace
+
+from red_handed.storage.settings_store import SettingsStore
 
 
 class MainWindow:
@@ -23,12 +26,27 @@ class MainWindow:
         self,
         root: tk.Tk,
         controller: MonitoringController,
+        *,
+        settings_store: SettingsStore | None = None,
     ) -> None:
         self.root = root
         self.controller = controller
         self.state = controller.state
-        # Connected by the zone-integration step to persist the saved zone.
-        self.on_save_zone = None
+        # Tests can inject a temporary store instead of using real user settings.
+        self.settings_store = (
+            settings_store if settings_store is not None else SettingsStore()
+        )
+
+        # Load once at startup. The store supplies defaults and an error message
+        # when the existing settings file cannot be read or validated.
+        self.controller.apply_settings(self.settings_store.load())
+
+        self.zone_text = tk.StringVar(
+            value=f"Privacy zone: {self.state.zone_status}"
+        )
+        self.settings_text = tk.StringVar(
+            value=self.settings_store.last_error or ""
+        )
 
         # Keep one scheduled frame callback so repeated Start cannot create loops.
         self._frame_after_id: str | None = None
@@ -72,7 +90,8 @@ class MainWindow:
         ttk.Label(sidebar, text="RED-HANDED", style="Heading.TLabel").pack(
             anchor="w", pady=(0, 20)
         )
-        ttk.Button(sidebar, text="Home", command=self.show_home).pack(fill=tk.X, pady=3)
+        ttk.Button(sidebar, text="Home", command=self.show_home).pack(
+            fill=tk.X, pady=3)
         ttk.Button(sidebar, text="Status / Calibration", command=self.show_calibration).pack(
             fill=tk.X, pady=3
         )
@@ -96,7 +115,8 @@ class MainWindow:
         for column in range(3):
             status_row.columnconfigure(column, weight=1)
 
-        self._status_card(status_row, 0, "Monitoring Status", self.monitoring_text)
+        self._status_card(status_row, 0, "Monitoring Status",
+                          self.monitoring_text)
         self._status_card(status_row, 1, "Camera Status", self.camera_text)
         self._status_card(status_row, 2, "Detected People", self.people_text)
 
@@ -113,7 +133,7 @@ class MainWindow:
             controls, text="Stop Monitoring", command=self.stop_monitoring
         )
         self.stop_button.grid(row=0, column=1, sticky="ew", padx=(6, 0))
-                # Allows recovery after reconnecting a camera or fixing permissions.
+        # Allows recovery after reconnecting a camera or fixing permissions.
         self.retry_button = ttk.Button(
             controls,
             text="Retry Camera",
@@ -127,13 +147,30 @@ class MainWindow:
             pady=(8, 0),
         )
 
-        preview_group = ttk.LabelFrame(content, text="Camera Preview", padding=12)
+        preview_group = ttk.LabelFrame(
+            content, text="Camera Preview", padding=12)
         preview_group.grid(row=4, column=0, sticky="nsew")
         preview_group.columnconfigure(0, weight=1)
         preview_group.rowconfigure(0, weight=1)
 
-        self.preview = ZonePreview(preview_group, lambda: self.message_text.set("Unsaved zone. Select Save Zone to apply."))
+        # Drawing changes button availability, but does not apply the draft.
+        self.preview = ZonePreview(preview_group, self._refresh_controls)
+        self.preview.saved_zone = self.controller.settings.privacy_zone
         self.preview.grid(row=0, column=0, sticky="nsew")
+
+        ttk.Label(
+            content,
+            textvariable=self.zone_text,
+            wraplength=720,
+        ).grid(row=5, column=0, sticky="ew", pady=(8, 0))
+
+        # A separate message prevents frame updates from hiding save/load errors.
+        ttk.Label(
+            content,
+            textvariable=self.settings_text,
+            style="Message.TLabel",
+            wraplength=720,
+        ).grid(row=6, column=0, sticky="ew", pady=(4, 0))
 
         ttk.Label(
             content,
@@ -142,7 +179,12 @@ class MainWindow:
             wraplength=720,
         ).grid(row=7, column=0, sticky="ew", pady=(8, 0))
 
-        self.calibration = CalibrationView(content, self.people_text, self.save_zone, self.preview.discard_draft)
+        self.calibration = CalibrationView(
+            content,
+            self.people_text,
+            self.save_zone,
+            self.discard_zone_draft,
+        )
         self.calibration.grid(row=8, column=0, sticky="ew", pady=(8, 0))
         self.calibration.grid_remove()
 
@@ -152,19 +194,50 @@ class MainWindow:
         """Show the dashboard without changing camera ownership or monitoring."""
         self.calibration.grid_remove()
         self.preview.set_editing(False)
+        self._refresh_controls()
 
     def show_calibration(self) -> None:
         """FR12.3 / FR12.4: share the running preview and current count."""
         self.show_home()
         self.calibration.grid()
         self.preview.set_editing(True)
+        self._refresh_controls()
 
     def save_zone(self) -> None:
-        if self.preview.draft_zone is None:
-            self.message_text.set("Draw a non-empty rectangle on the live calibration preview first.")
+        """Persist the draft before changing the zone used by monitoring."""
+        zone = self.preview.draft_zone
+        if zone is None:
+            self.settings_text.set(
+                "Draw a non-empty rectangle on the live calibration preview first."
+            )
             return
-        if self.on_save_zone is not None:
-            self.on_save_zone(self.preview.draft_zone)
+
+        # Replacing only this field preserves sensitivity and both timing values.
+        updated = replace(
+            self.controller.settings,
+            privacy_zone=zone,
+        )
+
+        try:
+            self.settings_store.save(updated)
+        except (OSError, ValueError, TypeError) as error:
+            # Keep the old active zone and the unsaved draft if saving fails.
+            self.settings_text.set(
+                f"Zone could not be saved. The previous zone remains active. {error}"
+            )
+            return
+
+        # Only a successful disk save is allowed to change the active settings.
+        self.controller.apply_settings(updated)
+        self.preview.saved_zone = zone
+        self.preview.discard_draft()
+        self.settings_text.set("Privacy zone saved.")
+        self._refresh_status()
+
+    def discard_zone_draft(self) -> None:
+        """Discard the drawing without modifying saved settings."""
+        self.preview.discard_draft()
+        self._refresh_controls()
 
     @staticmethod
     def _status_card(
@@ -177,7 +250,8 @@ class MainWindow:
             sticky="ew",
             padx=(0 if column == 0 else 6, 0),
         )
-        ttk.Label(card, textvariable=value, style="Status.TLabel").pack(anchor="w")
+        ttk.Label(card, textvariable=value,
+                  style="Status.TLabel").pack(anchor="w")
 
     def initialize(self) -> None:
         """Check camera availability after Tk has created the dashboard."""
@@ -187,6 +261,7 @@ class MainWindow:
         """Display the controller's latest state and detection result."""
         self.monitoring_text.set(self.state.monitoring_status.value)
         self.camera_text.set(self.state.camera_status.value)
+        self.zone_text.set(f"Privacy zone: {self.state.zone_status}")
 
         result = self.controller.detection
         self.people_text.set(
@@ -217,6 +292,15 @@ class MainWindow:
         )
         self.retry_button.configure(
             state=tk.DISABLED if active else tk.NORMAL
+        )
+        # Saving requires an active calibration session and a valid draft.
+        can_save = (
+            active
+            and self.preview.editing
+            and self.preview.draft_zone is not None
+        )
+        self.calibration.save_button.configure(
+            state=tk.NORMAL if can_save else tk.DISABLED
         )
 
     def retry_camera(self) -> None:
