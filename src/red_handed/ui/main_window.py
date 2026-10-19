@@ -1,6 +1,6 @@
 # TODO [FR1, FR12]: Present monitoring controls and system status.
 
-"""Tkinter dashboard: status, monitoring controls and a camera preview."""
+"""Tkinter dashboard: status, monitoring controls, preview and calibration."""
 
 from __future__ import annotations
 
@@ -12,33 +12,8 @@ from PIL import Image, ImageTk
 
 from red_handed.core.monitoring import MonitoringController
 from red_handed.core.system_state import CameraStatus, MonitoringStatus
-
-
-class PreviewCanvas(tk.Canvas):
-    """Camera image, or a text message while there is no image."""
-
-    def __init__(self, parent) -> None:
-        super().__init__(parent, width=640, height=320, bg="#111827", highlightthickness=0)
-        self._photo = None
-        self._message = "Camera preview is inactive"
-        self.bind("<Configure>", lambda _: self._draw())
-
-    def show_image(self, photo) -> None:
-        self._photo = photo
-        self._draw()
-
-    def clear(self, text: str) -> None:
-        self._photo = None
-        self._message = text
-        self._draw()
-
-    def _draw(self) -> None:
-        self.delete("all")
-        cx, cy = self.winfo_width() / 2, self.winfo_height() / 2
-        if self._photo is None:
-            self.create_text(cx, cy, text=self._message, fill="#e5e7eb")
-            return
-        self.create_image(cx, cy, image=self._photo)
+from red_handed.ui.calibration_view import CalibrationView
+from red_handed.ui.zone_preview import ZonePreview
 
 
 class MainWindow:
@@ -52,6 +27,8 @@ class MainWindow:
         self.root = root
         self.controller = controller
         self.state = controller.state
+        # Connected by the zone-integration step to persist the saved zone.
+        self.on_save_zone = None
 
         # Keep one scheduled frame callback so repeated Start cannot create loops.
         self._frame_after_id: str | None = None
@@ -87,6 +64,18 @@ class MainWindow:
         shell.pack(fill=tk.BOTH, expand=True)
         shell.columnconfigure(1, weight=1)
         shell.rowconfigure(0, weight=1)
+
+        sidebar = ttk.Frame(shell, padding=(8, 12), width=180)
+        sidebar.grid(row=0, column=0, sticky="nsw", padx=(0, 16))
+        sidebar.grid_propagate(False)
+
+        ttk.Label(sidebar, text="RED-HANDED", style="Heading.TLabel").pack(
+            anchor="w", pady=(0, 20)
+        )
+        ttk.Button(sidebar, text="Home", command=self.show_home).pack(fill=tk.X, pady=3)
+        ttk.Button(sidebar, text="Status / Calibration", command=self.show_calibration).pack(
+            fill=tk.X, pady=3
+        )
 
         content = ttk.Frame(shell)
         content.grid(row=0, column=1, sticky="nsew")
@@ -143,7 +132,7 @@ class MainWindow:
         preview_group.columnconfigure(0, weight=1)
         preview_group.rowconfigure(0, weight=1)
 
-        self.preview = PreviewCanvas(preview_group)
+        self.preview = ZonePreview(preview_group, lambda: self.message_text.set("Unsaved zone. Select Save Zone to apply."))
         self.preview.grid(row=0, column=0, sticky="nsew")
 
         ttk.Label(
@@ -153,7 +142,29 @@ class MainWindow:
             wraplength=720,
         ).grid(row=7, column=0, sticky="ew", pady=(8, 0))
 
+        self.calibration = CalibrationView(content, self.people_text, self.save_zone, self.preview.discard_draft)
+        self.calibration.grid(row=8, column=0, sticky="ew", pady=(8, 0))
+        self.calibration.grid_remove()
+
         self._refresh_controls()
+
+    def show_home(self) -> None:
+        """Show the dashboard without changing camera ownership or monitoring."""
+        self.calibration.grid_remove()
+        self.preview.set_editing(False)
+
+    def show_calibration(self) -> None:
+        """FR12.3 / FR12.4: share the running preview and current count."""
+        self.show_home()
+        self.calibration.grid()
+        self.preview.set_editing(True)
+
+    def save_zone(self) -> None:
+        if self.preview.draft_zone is None:
+            self.message_text.set("Draw a non-empty rectangle on the live calibration preview first.")
+            return
+        if self.on_save_zone is not None:
+            self.on_save_zone(self.preview.draft_zone)
 
     @staticmethod
     def _status_card(
