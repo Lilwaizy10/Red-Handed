@@ -1,18 +1,25 @@
-"""Connect camera capture, face detection, and shared monitoring state."""
+"""Connect camera capture, bounded face detection, and the privacy-risk pipeline."""
 
 from __future__ import annotations
 
 from typing import Any
+from collections.abc import Callable
+from concurrent.futures import Executor, Future, ThreadPoolExecutor
+from time import monotonic
 
 from red_handed.core.system_state import MonitoringStatus, SystemState
 from red_handed.detection.camera import CameraManager
 from red_handed.detection.person_detector import DetectionResult, PersonDetector
 from red_handed.core.settings import MonitoringSettings
 from red_handed.detection.privacy_zone import split_primary_face
+from red_handed.core.privacy_risk import PrivacyRiskEvaluator
 
 
 class MonitoringController:
     """Own the monitoring lifecycle without depending on Tkinter."""
+
+    # Evidence freshness, not sensitivity: do not bridge stalled detection periods.
+    MAX_OBSERVATION_GAP = 1.0
 
     def __init__(
         self,
@@ -20,16 +27,33 @@ class MonitoringController:
         state: SystemState | None = None,
         detector: PersonDetector | None = None,
         settings: MonitoringSettings | None = None,
+        *,
+        detection_interval: float = 0.1,
+        clock: Callable[[], float] = monotonic,
+        executor: Executor | None = None,
     ) -> None:
         # Injected dependencies let tests run without a webcam or native detector.
         self.camera = camera if camera is not None else CameraManager()
         self.state = state if state is not None else SystemState()
         self.detector = detector if detector is not None else PersonDetector()
 
+        if detection_interval <= 0:
+            raise ValueError("Detection interval must be positive.")
+        self._detection_interval = detection_interval
+        self._clock = clock
+        self._executor = executor
+        self._pending: Future[DetectionResult] | None = None
+        self._session = 0
+        self._pending_session = 0
+        self._next_detection_at = 0.0
+        self._pending_frame_size: tuple[int, int] | None = None
+        self._pending_captured_at = 0.0
+        self._last_risk_observation: float | None = None
+
         self._closed = False
-        self.apply_settings(
-            settings if settings is not None else MonitoringSettings()
-        )
+        initial = settings if settings is not None else MonitoringSettings()
+        self.risk_evaluator = PrivacyRiskEvaluator(initial)
+        self.apply_settings(initial)
 
     @property
     def detection(self) -> DetectionResult | None:
@@ -55,40 +79,46 @@ class MonitoringController:
 
         self.settings = settings
         self.state.privacy_zone = settings.privacy_zone
+        self.risk_evaluator.settings = settings
         self._reset_detection()
+        self._cancel_detection()
+        self._next_detection_at = self._clock()
 
-    def _zone_membership(
-        self,
-        frame: Any,
-        result: DetectionResult,
-    ) -> bool | None:
-        """Check additional face centres against the saved normalized zone."""
+    def _reset_risk(self) -> None:
+        """Discard timing built from evidence that is no longer valid."""
+        self.risk_evaluator.reset()
+        self.state.additional_person_in_zone = None
+        self._last_risk_observation = None
+
+    def _update_risk(self, result: DetectionResult) -> None:
+        """FR3.4 / FR4: evaluate boxes against the saved zone on fresh results only."""
         zone = self.settings.privacy_zone
-        if zone is None:
-            return None
-
-        # A count without matching boxes cannot support a zone decision.
-        if len(result.bounding_boxes) != result.person_count:
-            raise ValueError("Face count and bounding boxes do not match.")
-
-        # Detector boxes use the original camera frame's pixel coordinates.
-        frame_height, frame_width = frame.shape[:2]
-        if frame_width <= 0 or frame_height <= 0:
-            raise ValueError("Frame dimensions must be positive.")
-
+        if zone is None or self._pending_frame_size is None:
+            self._reset_risk()
+            return
+        sampled_at = self._pending_captured_at
+        # A count without matching boxes, or a late result, cannot support a decision.
+        if (self._clock() - sampled_at > self.MAX_OBSERVATION_GAP
+                or len(result.bounding_boxes) != result.person_count):
+            self._reset_risk()
+            return
+        if (self._last_risk_observation is not None
+                and sampled_at - self._last_risk_observation > self.MAX_OBSERVATION_GAP):
+            self._reset_risk()
         # Only the other faces are considered additional people.
-        _, additional_faces = split_primary_face(result.bounding_boxes)
-
-        return any(
-            zone.contains_face(box, frame_width, frame_height)
-            for box in additional_faces
-        )
+        _, additional = split_primary_face(result.bounding_boxes)
+        width, height = self._pending_frame_size
+        inside = any(zone.contains_face(box, width, height) for box in additional)
+        self.state.additional_person_in_zone = inside
+        self.risk_evaluator.update(inside, sampled_at)
+        self._last_risk_observation = sampled_at
 
     def _camera_failed(self, message: str) -> None:
         """Release the device and return the application to an inactive state."""
         self.camera.release()
         self.state.set_camera_unavailable(message)
         self._reset_detection()
+        self._cancel_detection()
 
     def refresh_camera_availability(self) -> bool:
         """Check whether the camera is usable, including after a failed attempt."""
@@ -125,10 +155,11 @@ class MonitoringController:
 
         self.state.set_camera_available()
         self._reset_detection()
+        self._next_detection_at = self._clock()
         return self.state.start_monitoring()
 
     def read_frame(self) -> Any | None:
-        """Read a frame, update face detection, and evaluate the saved zone."""
+        """Read a frame and schedule bounded face detection on it."""
         if self._closed:
             return None
 
@@ -142,33 +173,74 @@ class MonitoringController:
             )
             return None
 
-        try:
-            # Detection remains synchronous until the later async work.
-            result = self.detector.detect(frame)
-            if not isinstance(result, DetectionResult):
-                raise TypeError("The detector returned an invalid result.")
-
-            # Calculate membership before publishing the complete observation.
-            inside = self._zone_membership(frame, result)
-
-            self.state.detection = result
-            self.state.detection_error = None
-            self.state.additional_person_in_zone = inside
-        except Exception as error:
-            # Never retain a reassuring old zone result after detection fails.
-            self._reset_detection()
-            self.state.detection_error = (
-                f"Face detection unavailable: {error}"
-            )
-
         # A detection failure should not prevent the camera preview.
+        self._update_detection(frame)
         return frame
+
+    def _update_detection(self, frame: Any) -> None:
+        """Collect a finished result, then submit at most one new frame."""
+        if (self._last_risk_observation is not None
+                and self._clock() - self._last_risk_observation > self.MAX_OBSERVATION_GAP):
+            self._reset_risk()
+        if self._pending is not None:
+            if not self._pending.done():
+                return  # At most one frame in flight; never build a backlog.
+            pending, self._pending = self._pending, None
+            # A result from before Stop, camera loss, or a settings change is stale.
+            if self._pending_session == self._session:
+                try:
+                    result = pending.result()
+                    if not isinstance(result, DetectionResult):
+                        raise TypeError("The detector returned an invalid result.")
+                    self.state.detection = result
+                    self.state.detection_error = None
+                    self._update_risk(result)
+                except Exception as error:
+                    # Never retain a reassuring old zone result after detection fails.
+                    self._reset_detection()
+                    self.state.detection_error = (
+                        f"Face detection unavailable: {error}"
+                    )
+
+        # Throttle submissions to the configured detection interval.
+        now = self._clock()
+        if now < self._next_detection_at:
+            return
+        self._next_detection_at = now + self._detection_interval
+        try:
+            if self._executor is None:
+                self._executor = ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="red-handed-detection"
+                )
+            # One owned in-memory copy. The UI and worker never mutate a shared frame.
+            self._pending_frame_size = (
+                (frame.shape[1], frame.shape[0])
+                if self.settings.privacy_zone is not None else None
+            )
+            self._pending_captured_at = now
+            self._pending = self._executor.submit(self.detector.detect, frame.copy())
+            self._pending_session = self._session
+        except Exception:
+            self._reset_detection()
+            self.state.detection_error = "Detection unavailable. Stop and restart monitoring."
+
+    def _cancel_detection(self) -> None:
+        """Stop scheduling work and ignore any result from the previous session.
+
+        A running detector call cannot be interrupted. It may finish its current
+        in-memory frame, but must never update stopped/restarted session state.
+        Keep its future until finished to prevent concurrent detector calls.
+        """
+        self._session += 1
+        if self._pending is not None and self._pending.cancel():
+            self._pending = None
 
     def stop_monitoring(self) -> None:
         """Stop frame retrieval and release the camera."""
         self.camera.release()
         self.state.stop_monitoring()
         self._reset_detection()
+        self._cancel_detection()
 
         # Keep the detector available for another Start.
         # Its native resources are released only when the application closes.
@@ -182,5 +254,12 @@ class MonitoringController:
         try:
             self.stop_monitoring()
         finally:
-            # Attempt detector cleanup even if stopping raises an exception.
-            self.detector.close()
+            try:
+                if self._executor is not None:
+                    # No queued frames; allow the one bounded detector call to finish.
+                    self._executor.shutdown(wait=True, cancel_futures=True)
+                    self._executor = None
+                self._pending = None
+            finally:
+                # Attempt detector cleanup even if stopping raises an exception.
+                self.detector.close()
