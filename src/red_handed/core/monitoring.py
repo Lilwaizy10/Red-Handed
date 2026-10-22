@@ -87,7 +87,7 @@ class MonitoringController:
     def _reset_risk(self) -> None:
         """Discard timing built from evidence that is no longer valid."""
         self.risk_evaluator.reset()
-        self.state.additional_person_in_zone = None
+        self.state.reset_risk()
         self._last_risk_observation = None
 
     def _update_risk(self, result: DetectionResult) -> None:
@@ -110,7 +110,7 @@ class MonitoringController:
         width, height = self._pending_frame_size
         inside = any(zone.contains_face(box, width, height) for box in additional)
         self.state.additional_person_in_zone = inside
-        self.risk_evaluator.update(inside, sampled_at)
+        self.state.risk_status = self.risk_evaluator.update(inside, sampled_at)
         self._last_risk_observation = sampled_at
 
     def _camera_failed(self, message: str) -> None:
@@ -197,6 +197,7 @@ class MonitoringController:
                     self._update_risk(result)
                 except Exception as error:
                     # Never retain a reassuring old zone result after detection fails.
+                    self._reset_risk()
                     self._reset_detection()
                     self.state.detection_error = (
                         f"Face detection unavailable: {error}"
@@ -221,6 +222,7 @@ class MonitoringController:
             self._pending = self._executor.submit(self.detector.detect, frame.copy())
             self._pending_session = self._session
         except Exception:
+            self._reset_risk()
             self._reset_detection()
             self.state.detection_error = "Detection unavailable. Stop and restart monitoring."
 
@@ -232,6 +234,7 @@ class MonitoringController:
         Keep its future until finished to prevent concurrent detector calls.
         """
         self._session += 1
+        self._reset_risk()
         if self._pending is not None and self._pending.cancel():
             self._pending = None
 
