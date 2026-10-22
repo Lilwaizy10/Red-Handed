@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from enum import Enum
 from red_handed.detection.person_detector import DetectionResult
 from red_handed.detection.privacy_zone import PrivacyZone
-
+from red_handed.core.privacy_risk import RiskStatus
 
 class MonitoringStatus(Enum):
     """Whether camera-based privacy monitoring is running."""
@@ -37,12 +37,22 @@ class SystemState:
 
     # None means unknown/unavailable; False means a valid outside-zone result.
     additional_person_in_zone: bool | None = None
+    risk_status: RiskStatus | None = None
+
+    @property
+    def privacy_risk_active(self) -> bool:
+        return self.risk_status in (RiskStatus.ACTIVE, RiskStatus.PENDING_RECOVERY)
+
+    def reset_risk(self) -> None:
+            """Unknown observations must not look like a measured safe state."""
+            self.additional_person_in_zone = None
+            self.risk_status = None
 
     def reset_detection(self) -> None:
         """Clear transient observations without deleting the saved zone."""
         self.detection = None
         self.detection_error = None
-        self.additional_person_in_zone = None
+        self.reset_risk()
 
     @property
     def zone_status(self) -> str:
