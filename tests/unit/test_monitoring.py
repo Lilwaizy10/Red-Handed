@@ -7,7 +7,14 @@ from unittest.mock import Mock
 
 # Allow tests to import the application directly from the source directory.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from monitoring_test_support import (
+    FakeClock,
+    FakeFrame,
+    ImmediateExecutor,
+    read_detection,
+)
 from red_handed.core.monitoring import MonitoringController
 from red_handed.core.system_state import CameraStatus, MonitoringStatus
 from red_handed.detection.camera import CameraManager
@@ -22,7 +29,8 @@ class MonitoringControllerTests(unittest.TestCase):
         self.camera.open.return_value = True
 
         # The controller passes frames through without interpreting their pixels.
-        self.frame = object()
+        self.frame = FakeFrame()
+        self.clock = FakeClock()
         self.camera.read_frame.return_value = self.frame
 
         self.detector = Mock(spec=PersonDetector)
@@ -31,6 +39,8 @@ class MonitoringControllerTests(unittest.TestCase):
         self.controller = MonitoringController(
             camera=self.camera,
             detector=self.detector,
+            clock=self.clock,
+            executor=ImmediateExecutor(),
         )
         self.addCleanup(self.controller.close)
 
@@ -90,7 +100,7 @@ class MonitoringControllerTests(unittest.TestCase):
     def test_frame_updates_detected_count(self) -> None:
         self.controller.start_monitoring()
 
-        frame = self.controller.read_frame()
+        frame = read_detection(self.controller, self.clock)
 
         self.assertIs(frame, self.frame)
         self.detector.detect.assert_called_once_with(self.frame)
@@ -101,7 +111,7 @@ class MonitoringControllerTests(unittest.TestCase):
         self.detector.detect.return_value = DetectionResult(person_count=0)
         self.controller.start_monitoring()
 
-        self.controller.read_frame()
+        read_detection(self.controller, self.clock)
 
         self.assertIsNotNone(self.controller.detection)
         self.assertEqual(self.controller.detection.person_count, 0)
@@ -115,7 +125,7 @@ class MonitoringControllerTests(unittest.TestCase):
         self.controller.start_monitoring()
 
         # The first frame still reaches the preview despite failed detection.
-        self.assertIs(self.controller.read_frame(), self.frame)
+        self.assertIs(read_detection(self.controller, self.clock), self.frame)
         self.assertIsNone(self.controller.detection)
         self.assertIn("Model unavailable", self.controller.detection_error)
         self.assertIs(
@@ -124,13 +134,13 @@ class MonitoringControllerTests(unittest.TestCase):
         )
 
         # A later successful result replaces the error.
-        self.controller.read_frame()
+        read_detection(self.controller, self.clock)
         self.assertEqual(self.controller.detection.person_count, 1)
         self.assertIsNone(self.controller.detection_error)
 
     def test_camera_loss_clears_previous_result_and_releases_device(self) -> None:
         self.controller.start_monitoring()
-        self.controller.read_frame()
+        read_detection(self.controller, self.clock)
         self.camera.read_frame.return_value = None
         self.camera.last_error = "Camera disconnected."
 
@@ -148,7 +158,7 @@ class MonitoringControllerTests(unittest.TestCase):
 
     def test_stop_prevents_reads_and_allows_restart(self) -> None:
         self.controller.start_monitoring()
-        self.controller.read_frame()
+        read_detection(self.controller, self.clock)
 
         self.controller.stop_monitoring()
         self.camera.read_frame.reset_mock()
@@ -162,7 +172,8 @@ class MonitoringControllerTests(unittest.TestCase):
         self.detector.close.assert_not_called()
 
         self.assertTrue(self.controller.start_monitoring())
-        self.assertIs(self.controller.read_frame(), self.frame)
+        # Submit and collect the failed detection before checking its error.
+        self.assertIs(read_detection(self.controller, self.clock), self.frame)
 
     def test_close_releases_resources_once_and_prevents_restart(self) -> None:
         self.controller.start_monitoring()

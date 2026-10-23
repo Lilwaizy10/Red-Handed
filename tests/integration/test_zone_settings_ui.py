@@ -53,7 +53,16 @@ class ZoneSettingsUITests(unittest.TestCase):
             controller,
             settings_store=SettingsStore(self.path),
         )
-        self.addCleanup(window.close)
+        def cleanup_window():
+            try:
+                exists = root.winfo_exists()
+            except tk.TclError:
+                return
+
+            if exists:
+                window.close()
+
+        self.addCleanup(cleanup_window)
         return window
 
     def prepare_draft(self) -> None:
@@ -114,13 +123,13 @@ class ZoneSettingsUITests(unittest.TestCase):
 
         # The next frame's status refresh must not erase the save error.
         self.window._refresh_status()
-        self.assertIn("could not be saved", self.window.settings_text.get())
+        self.assertIn("Zone not saved", self.window.message_text.get())
 
     def test_discard_and_home_do_not_save_drafts(self) -> None:
         before = self.path.read_bytes()
 
         self.prepare_draft()
-        self.window.discard_zone_draft()
+        self.window.preview.discard_draft()
         self.assertIsNone(self.window.preview.draft_zone)
 
         self.prepare_draft()
@@ -136,7 +145,7 @@ class ZoneSettingsUITests(unittest.TestCase):
         self.window.save_zone()
 
         self.assertEqual(self.path.read_bytes(), before)
-        self.assertIn("Draw a non-empty", self.window.settings_text.get())
+        self.assertIn("Draw a non-empty", self.window.message_text.get())
 
     def test_malformed_settings_are_preserved_and_reported(self) -> None:
         self.window.close()
@@ -147,14 +156,17 @@ class ZoneSettingsUITests(unittest.TestCase):
 
         self.assertEqual(restarted.controller.settings, MonitoringSettings())
         self.assertEqual(self.path.read_text(encoding="utf-8"), "not valid json")
-        self.assertIn("could not be loaded", restarted.settings_text.get())
-        self.assertEqual(restarted.zone_text.get(), "Privacy zone: Unconfigured")
+        self.assertIn("could not be loaded", restarted.settings_notice.get())
+        self.assertIn(
+            "Privacy Zone: Unconfigured",
+            restarted.risk_text.get(),
+        )
 
     def test_calibration_helper_reads_shared_detection_state(self) -> None:
         self.window.controller.start_monitoring()
         self.window.controller.state.detection = DetectionResult(person_count=2)
 
-        count, description = detection_labels(self.window.state)
+        count, description = detection_labels(self.window.controller.state)
 
         self.assertEqual(count, "2")
         self.assertEqual(description, "Additional person detected")
