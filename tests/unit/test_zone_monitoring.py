@@ -2,12 +2,19 @@
 
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 import sys
 import unittest
 from unittest.mock import Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from monitoring_test_support import (
+    FakeClock,
+    FakeFrame,
+    ImmediateExecutor,
+    read_detection,
+)
 
 from red_handed.core.monitoring import MonitoringController
 from red_handed.core.settings import MonitoringSettings
@@ -24,7 +31,8 @@ class ZoneMonitoringTests(unittest.TestCase):
         self.camera.last_error = None
 
         # Only frame dimensions are needed because detection is mocked.
-        self.frame = SimpleNamespace(shape=(100, 200, 3))
+        self.frame = FakeFrame()
+        self.clock = FakeClock()
         self.camera.read_frame.return_value = self.frame
 
         self.detector = Mock(spec=PersonDetector)
@@ -35,6 +43,8 @@ class ZoneMonitoringTests(unittest.TestCase):
             camera=self.camera,
             detector=self.detector,
             settings=self.settings,
+            clock=self.clock,
+            executor=ImmediateExecutor(),
         )
         self.addCleanup(self.controller.close)
         self.controller.start_monitoring()
@@ -45,7 +55,7 @@ class ZoneMonitoringTests(unittest.TestCase):
             person_count=len(boxes),
             bounding_boxes=boxes,
         )
-        self.controller.read_frame()
+        read_detection(self.controller, self.clock)
 
     def test_no_zone_is_unconfigured(self) -> None:
         self.controller.apply_settings(MonitoringSettings())
@@ -112,7 +122,7 @@ class ZoneMonitoringTests(unittest.TestCase):
         self.observe(boxes)
         self.detector.detect.side_effect = RuntimeError("Detector failed.")
 
-        self.assertIs(self.controller.read_frame(), self.frame)
+        self.assertIs(read_detection(self.controller, self.clock), self.frame)
         self.assertIsNone(self.controller.state.additional_person_in_zone)
         self.assertEqual(
             self.controller.state.zone_status,
@@ -149,11 +159,12 @@ class ZoneMonitoringTests(unittest.TestCase):
             bounding_boxes=((0, 0, 100, 100),),
         )
 
-        self.controller.read_frame()
+        read_detection(self.controller, self.clock)
 
+        self.assertEqual(self.controller.detection.person_count, 2)
         self.assertIsNone(self.controller.state.additional_person_in_zone)
-        self.assertIsNone(self.controller.detection)
-        self.assertIn("do not match", self.controller.detection_error)
+        self.assertIsNone(self.controller.state.risk_status)
+        self.assertFalse(self.controller.state.privacy_risk_active)
 
 
 if __name__ == "__main__":

@@ -14,8 +14,7 @@ def main() -> None:
     try:
         window = MainWindow(root, controller)
 
-        # Let Tk construct the interface before checking the camera.
-        root.after_idle(window.initialize)
+        # Run the event loop.
         root.mainloop()
     finally:
         # Also clean up if startup fails or the event loop exits unexpectedly.
