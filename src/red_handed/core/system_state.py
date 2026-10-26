@@ -5,6 +5,7 @@ from enum import Enum
 from red_handed.detection.person_detector import DetectionResult
 from red_handed.detection.privacy_zone import PrivacyZone
 from red_handed.core.privacy_risk import RiskStatus
+from red_handed.core.settings import ProtectionMode
 
 class MonitoringStatus(Enum):
     """Whether camera-based privacy monitoring is running."""
@@ -38,6 +39,12 @@ class SystemState:
     # None means unknown/unavailable; False means a valid outside-zone result.
     additional_person_in_zone: bool | None = None
     risk_status: RiskStatus | None = None
+    protection_active: bool = False
+    selected_protection_mode: ProtectionMode = ProtectionMode.PRIVACY_OVERLAY
+    automatic_protection_requested: bool = False
+    manual_protection_requested: bool = False
+    test_protection_requested: bool = False
+    protection_error: str | None = None
 
     @property
     def privacy_risk_active(self) -> bool:
