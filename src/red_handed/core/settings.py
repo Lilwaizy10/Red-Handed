@@ -3,6 +3,31 @@ from enum import Enum
 from math import isfinite
 
 from red_handed.detection.privacy_zone import PrivacyZone
+from red_handed.system.hotkey_manager import parse_hotkey
+
+
+class ProtectionMode(str, Enum):
+    PRIVACY_OVERLAY = "Privacy Overlay"
+    SCREEN_BLACKOUT = "Screen Blackout"
+
+
+@dataclass(frozen=True)
+class ProtectionSettings:
+    """FR7 / FR10: defaults from the mockup; separate from risk configuration."""
+
+    mode: ProtectionMode = ProtectionMode.PRIVACY_OVERLAY
+    hotkey: str = "Ctrl+Alt+P"
+
+    def __post_init__(self):
+        if not isinstance(self.mode, ProtectionMode):
+            raise ValueError("Select Privacy Overlay or Screen Blackout.")
+        # Reject non-text first: a hand-edited settings file could hold a number
+        # or null here, and parse_hotkey might raise AttributeError (which the
+        # settings store does not catch) instead of ValueError.
+        if not isinstance(self.hotkey, str):
+            raise ValueError("Hotkey must be text.")
+        # Store the normalised form so equivalent spellings compare equal.
+        object.__setattr__(self, 'hotkey', parse_hotkey(self.hotkey).text)
 
 
 class Sensitivity(str, Enum):
@@ -13,7 +38,7 @@ class Sensitivity(str, Enum):
 
 @dataclass(frozen=True)
 class MonitoringSettings:
-    """FR9: no privacy zone is chosen for the user."""
+    """FR9: defaults follow the mockup; no privacy zone is chosen for the user."""
 
     privacy_zone: PrivacyZone | None = None
     sensitivity: Sensitivity = Sensitivity.MEDIUM
