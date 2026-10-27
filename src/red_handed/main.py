@@ -7,26 +7,27 @@ from red_handed.ui.main_window import MainWindow
 
 
 def main() -> None:
-    """Create one controller and connect it to the desktop dashboard."""
+    """Start the dashboard and clean up the resources that were created."""
     root = tk.Tk()
-    controller = MonitoringController()
+    controller = None
+    window = None
 
     try:
+        controller = MonitoringController()
         window = MainWindow(root, controller)
-
-        # Run the event loop.
         root.mainloop()
     finally:
-        # Also clean up if startup fails or the event loop exits unexpectedly.
-        # Controller.close() is safe to call more than once.
-        try:
-            controller.close()
-        finally:
+        if window is not None:
+            # MainWindow owns hotkeys, protection, timers, and controller cleanup.
+            # Its close() method is safe after the normal X-button close.
+            window.close()
+        else:
+            # Construction failed before ownership passed to a complete window.
             try:
+                if controller is not None:
+                    controller.close()
+            finally:
                 root.destroy()
-            except tk.TclError:
-                # The normal window-close handler may already have destroyed Tk.
-                pass
 
 
 if __name__ == "__main__":
