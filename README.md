@@ -2,7 +2,7 @@
 
 Red-Handed is a Windows desktop privacy-protection system intended to reduce shoulder-surfing by detecting additional people within a configured privacy zone and activating a selected screen-protection mode.
 
-**Current status:** Phrase 3 risk timing and asynchronous detection implemented; validation results are recorded in docs/phase3_testing.md.
+**Current status:** Round 4 protection integration implemented; validation results are recorded in docs/phase4_testing.md.
 
 **Initial target:** 64-bit Windows 10 and Windows 11
 
@@ -47,7 +47,25 @@ recovery, and pending recovery still counts as active risk.
 
 Unknown or stale evidence resets transient timing and is displayed as
 unavailable risk. Sensitivity is saved but has no defined behavioural effect.
-Screen protection belongs to a later round.
+
+## Screen protection
+
+Open Protection Mode to choose Privacy Overlay or Screen Blackout and configure
+the emergency shortcut. The default shortcut is Ctrl+Alt+P.
+
+Emergency Protect and the shortcut toggle manual protection, including when
+monitoring is stopped or camera access is unavailable.
+
+Automatic protection follows confirmed privacy risk and remains active during
+pending recovery. Automatic and manual requests are independent. Stop Monitoring
+clears only the automatic request.
+
+Status / Calibration includes a labelled five-second Test Protection action.
+A real automatic request is not cleared by the test timeout.
+
+Protection covers the primary display only. It is not a Windows lock screen
+or secure desktop. Application-aware protection and event history are not yet
+connected.
 
 ## Folder structure
 

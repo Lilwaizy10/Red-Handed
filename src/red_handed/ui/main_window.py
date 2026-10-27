@@ -9,6 +9,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from PIL import Image, ImageTk
+import logging
 
 from red_handed.core.monitoring import MonitoringController
 from red_handed.core.settings import MonitoringSettings
@@ -17,6 +18,11 @@ from red_handed.ui.calibration_view import CalibrationView, detection_labels
 from red_handed.ui.zone_preview import ZonePreview
 from red_handed.ui.settings_view import SettingsView
 from red_handed.storage.settings_store import SettingsStore
+from red_handed.core.protection import ProtectionManager
+from red_handed.core.settings import ProtectionSettings
+from red_handed.system.hotkey_manager import HotkeyManager, WindowsHotkeyBackend
+from red_handed.ui.protection_surface import TkProtectionSurface
+from red_handed.ui.protection_view import ProtectionView
 
 
 class MainWindow:
@@ -25,10 +31,22 @@ class MainWindow:
     PREVIEW_SIZE = (640, 360)
     FRAME_INTERVAL_MS = 33
 
-    def __init__(self, root: tk.Tk, controller: MonitoringController,
-                 settings_store: SettingsStore | None = None) -> None:
+    def __init__(
+        self,
+        root: tk.Tk,
+        controller: MonitoringController,
+        settings_store: SettingsStore | None = None,
+        *,
+        enable_hotkeys: bool = True,
+    ) -> None:
         self.root = root
         self.controller = controller
+        self._closed = False
+        self._enable_hotkeys = enable_hotkeys
+        self._hotkey_job = None
+        self._test_job = None
+        self._hotkey_error = None
+        self.hotkeys = None
         # Tests can inject a temporary store instead of using real user settings.
         self.settings_store = settings_store if settings_store is not None else SettingsStore()
         self._frame_job: str | None = None
@@ -40,6 +58,26 @@ class MainWindow:
         # or invalid. This must run BEFORE settings_notice and preview.saved_zone
         # read their values below. (Harmless if the entry point also applies it.)
         self.controller.apply_settings(self.settings_store.load())
+        
+        # load() already populated both monitoring and protection settings.
+        self.protection_settings = self.settings_store.protection_settings
+
+        # The surface creates its actual window only when protection is shown.
+        self.surface = TkProtectionSurface(
+            root,
+            toggle_manual=self.toggle_manual,
+            stop_monitoring=self.stop_monitoring,
+            close_app=self.close,
+            dismiss_test=self.end_test_protection,
+        )
+        self.protection = ProtectionManager(
+            controller.state,
+            self.surface,
+            self.protection_settings.mode,
+        )
+
+        self.protection_text = tk.StringVar(master=root, value="Protection: Inactive")
+        self.hotkey_text = tk.StringVar(master=root, value="Emergency hotkey: starting")
 
         self.monitoring_text = tk.StringVar(value="Inactive")
         self.camera_text = tk.StringVar(value="Checking...")
@@ -53,6 +91,19 @@ class MainWindow:
         self._build_layout()
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self._camera_check_job = self.root.after(100, self._initial_camera_check)
+        self.controller.attach_protection(self.protection)
+
+        if self._enable_hotkeys:
+            try:
+                self._ensure_hotkeys()
+                self.hotkeys.configure(self.protection_settings.hotkey)
+            except Exception as error:
+                # Startup conflicts must not disable the onscreen emergency button.
+                self._hotkey_error = str(error)
+
+            self._hotkey_job = self.root.after(50, self._poll_hotkeys)
+
+        self._refresh_protection()
 
     def _configure_window(self) -> None:
         self.root.title("Red-Handed")
@@ -86,7 +137,11 @@ class MainWindow:
         ttk.Button(sidebar, text="Detection & Timing", command=self.show_settings).pack(
             fill=tk.X, pady=3
         )
-
+        ttk.Button(
+            sidebar,
+            text="Protection Mode",
+            command=self.show_protection,
+        ).pack(fill=tk.X, pady=3)
         content = ttk.Frame(shell)
         content.grid(row=0, column=1, sticky="nsew")
         content.columnconfigure(0, weight=1)
@@ -127,6 +182,19 @@ class MainWindow:
             controls, text="Retry Camera Access", command=self.retry_camera
         )
         self.retry_button.grid(row=0, column=2, sticky="ew", padx=(6, 0))
+         # Manual protection remains available when monitoring or the camera is off.
+        self.emergency_button = ttk.Button(
+            controls,
+            text="Emergency Protect / Toggle Manual",
+            command=self.toggle_manual,
+        )
+        self.emergency_button.grid(
+            row=1,
+            column=0,
+            columnspan=3,
+            sticky="ew",
+            pady=(8, 0),
+        )
 
         preview_group = ttk.LabelFrame(content, text="Camera Preview", padding=12)
         preview_group.grid(row=4, column=0, sticky="nsew")
@@ -160,8 +228,12 @@ class MainWindow:
         )
         self.calibration.grid(row=8, column=0, sticky="ew", pady=(8, 0))
         self.calibration.grid_remove()
-        # The getter is a lambda so the view always reads the controller's latest
-        # (frozen, replaced-on-save) settings object.
+        ttk.Button(
+            self.calibration,
+            text="Test Protection (5 seconds)",
+            command=self.begin_test_protection,
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=4)
+    
         self.settings_view = SettingsView(
             content, lambda: self.controller.settings, self.save_settings
         )
@@ -170,6 +242,28 @@ class MainWindow:
         ttk.Label(content, textvariable=self.settings_notice, wraplength=650).grid(
             row=9, column=0, sticky="ew"
         )
+        
+        self.protection_view = ProtectionView(
+            content,
+            lambda: self.protection_settings,
+            self.save_protection_settings,
+        )
+        self.protection_view.grid(
+            row=8, column=0, sticky="ew", pady=(8, 0)
+        )
+        self.protection_view.grid_remove()
+
+        ttk.Label(
+            content,
+            textvariable=self.protection_text,
+            wraplength=650,
+        ).grid(row=10, column=0, sticky="ew", pady=(6, 0))
+
+        ttk.Label(
+            content,
+            textvariable=self.hotkey_text,
+            wraplength=650,
+        ).grid(row=11, column=0, sticky="ew")
 
         self._refresh_controls()
 
@@ -178,12 +272,20 @@ class MainWindow:
         self.calibration.grid_remove()
         self.settings_view.grid_remove()
         self.preview.set_editing(False)
+        self.protection_view.grid_remove()
 
     def show_calibration(self) -> None:
         """FR12.3 / FR12.4: share the running preview and current count."""
         self.calibration.grid()
         self.settings_view.grid_remove()
         self.preview.set_editing(True)
+        self.protection_view.grid_remove()
+
+    def show_protection(self) -> None:
+        """Open protection settings and discard stale edits in that panel."""
+        self.show_home()
+        self.protection_view.reload()
+        self.protection_view.grid()
 
     def show_settings(self) -> None:
         self.show_home()
@@ -268,6 +370,7 @@ class MainWindow:
         else:
             risk = state.risk_status.value
         self.risk_text.set(f"Privacy Zone: {zone} | Additional Person in Privacy Zone: {inside}\nPrivacy Risk: {risk}")
+        self._refresh_protection()
 
     def _refresh_controls(self) -> None:
         state = self.controller.state
@@ -363,13 +466,192 @@ class MainWindow:
         self.message_text.set("Monitoring is inactive. Camera access has been released.")
         self._refresh_status()
 
+    def _ensure_hotkeys(self) -> None:
+        """Create the Windows service lazily, allowing retry after startup failure."""
+        if self.hotkeys is not None:
+            return
+
+        if not self._enable_hotkeys:
+            raise OSError("Global hotkeys are disabled for this test instance.")
+
+        backend = WindowsHotkeyBackend()
+        self.hotkeys = HotkeyManager(backend, self.toggle_manual)
+
+    def _poll_hotkeys(self) -> None:
+        """Dispatch queued hotkey events on Tk's thread, never the worker thread."""
+        self._hotkey_job = None
+        if self._closed:
+            return
+
+        try:
+            if self.hotkeys is not None:
+                self.hotkeys.poll()
+        except Exception as error:
+            self._hotkey_error = str(error)
+
+        self._refresh_protection()
+        if not self._closed:
+            self._hotkey_job = self.root.after(50, self._poll_hotkeys)
+
+    def _refresh_protection(self) -> None:
+        """Show actual protection state and hotkey availability."""
+        if self._closed:
+            return
+
+        state = self.controller.state
+        if state.protection_error:
+            self.protection_text.set(
+                f"Protection error: {state.protection_error}"
+            )
+        elif state.protection_active:
+            self.protection_text.set(
+                f"Protection: {state.selected_protection_mode.value} "
+                f"({self.protection.source})"
+            )
+        else:
+            self.protection_text.set("Protection: Inactive")
+
+        if not self._enable_hotkeys:
+            self.hotkey_text.set("Global hotkeys disabled for testing.")
+        elif self._hotkey_error:
+            self.hotkey_text.set(
+                f"Hotkey problem: {self._hotkey_error} "
+                "The Emergency Protect button remains available."
+            )
+        elif self.hotkeys is not None and self.hotkeys.current is not None:
+            self.hotkey_text.set(
+                f"Emergency hotkey: {self.hotkeys.current.text}"
+            )
+        else:
+            self.hotkey_text.set(
+                "No global hotkey registered. Use Emergency Protect."
+            )
+
+    def toggle_manual(self) -> None:
+        """Toggle manual protection independently of camera and risk state."""
+        if self._closed:
+            return
+
+        if self.controller.state.test_protection_requested:
+            # During a test, the shortcut acts as an early dismissal.
+            self.end_test_protection()
+            return
+
+        self.protection.toggle_manual()
+        self._refresh_protection()
+
+    def begin_test_protection(self) -> None:
+        """Show a labelled test that expires without clearing real requests."""
+        if self._closed:
+            return
+
+        try:
+            self.protection.begin_test()
+        except ValueError as error:
+            self.settings_notice.set(str(error))
+            return
+
+        if self._test_job is not None:
+            self.root.after_cancel(self._test_job)
+
+        self._test_job = self.root.after(5000, self.end_test_protection)
+        self._refresh_protection()
+
+    def end_test_protection(self) -> None:
+        """End only the test request; automatic/manual requests are independent."""
+        if self._closed:
+            return
+
+        if self._test_job is not None:
+            self.root.after_cancel(self._test_job)
+            self._test_job = None
+
+        self.protection.end_test()
+        self._refresh_protection()
+
+    def save_protection_settings(self, settings: ProtectionSettings) -> None:
+        """Reserve the new shortcut, persist settings, then replace the old one."""
+        if not isinstance(settings, ProtectionSettings):
+            raise ValueError("Invalid protection settings.")
+
+        try:
+            self._ensure_hotkeys()
+            # A conflicting candidate must fail before anything is written.
+            self.hotkeys.prepare(settings.hotkey)
+        except Exception as error:
+            raise ValueError(str(error)) from error
+
+        try:
+            # Keep the current zone, sensitivity, and delays unchanged.
+            self.settings_store.save(
+                self.controller.settings,
+                protection=settings,
+            )
+        except Exception as error:
+            try:
+                # Release the candidate; retain the old working shortcut.
+                self.hotkeys.rollback()
+            except Exception as rollback_error:
+                self._hotkey_error = (
+                    f"Could not release the unsaved shortcut: {rollback_error}"
+                )
+                self._refresh_protection()
+
+            raise OSError(f"Protection settings were not saved: {error}") from error
+
+        self.protection_settings = settings
+
+        try:
+            self.hotkeys.commit()
+        except Exception as error:
+            # commit() selects the new binding before unregistering the old one.
+            # The settings were saved; report a cleanup issue accurately.
+            self._hotkey_error = (
+                f"Settings saved, but old shortcut cleanup failed: {error}"
+            )
+        else:
+            self._hotkey_error = None
+
+        self.protection.select_mode(settings.mode)
+        self._refresh_protection()
+
     def close(self) -> None:
-        """Release camera access before closing the window."""
-        if self._camera_check_job is not None:
-            self.root.after_cancel(self._camera_check_job)
-            self._camera_check_job = None
-        if self._frame_job is not None:
-            self.root.after_cancel(self._frame_job)
-            self._frame_job = None
-        self.controller.close()
-        self.root.destroy()
+        """Remove callbacks and attempt every resource cleanup exactly once."""
+        if self._closed:
+            return
+        self._closed = True
+
+        logger = logging.getLogger(__name__)
+
+        for attribute in (
+            "_camera_check_job",
+            "_frame_job",
+            "_hotkey_job",
+            "_test_job",
+        ):
+            job = getattr(self, attribute, None)
+            setattr(self, attribute, None)
+            if job is not None:
+                try:
+                    self.root.after_cancel(job)
+                except tk.TclError:
+                    logger.exception("Could not cancel %s", attribute)
+
+        cleanup_steps = []
+        if self.hotkeys is not None:
+            cleanup_steps.append(self.hotkeys.close)
+
+        cleanup_steps.extend([
+            lambda: self.controller.attach_protection(None),
+            self.protection.close,
+            self.root.destroy,
+            self.controller.close,
+        ])
+
+        # Remove the surface and release the shortcut before waiting for the
+        # detector worker. One failed cleanup must not skip the remaining steps.
+        for cleanup in cleanup_steps:
+            try:
+                cleanup()
+            except Exception:
+                logger.exception("Application cleanup failed")
