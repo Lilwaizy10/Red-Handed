@@ -1,5 +1,13 @@
 """Settings/UI integration using temporary files and mocked camera access."""
 
+from red_handed.ui.main_window import MainWindow
+from red_handed.ui.calibration_view import detection_labels
+from red_handed.storage.settings_store import SettingsStore
+from red_handed.detection.privacy_zone import PrivacyZone
+from red_handed.detection.person_detector import DetectionResult, PersonDetector
+from red_handed.detection.camera import CameraManager
+from red_handed.core.settings import MonitoringSettings, Sensitivity
+from red_handed.core.monitoring import MonitoringController
 from pathlib import Path
 import sys
 import tempfile
@@ -8,15 +16,6 @@ import unittest
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
-
-from red_handed.core.monitoring import MonitoringController
-from red_handed.core.settings import MonitoringSettings, Sensitivity
-from red_handed.detection.camera import CameraManager
-from red_handed.detection.person_detector import DetectionResult, PersonDetector
-from red_handed.detection.privacy_zone import PrivacyZone
-from red_handed.storage.settings_store import SettingsStore
-from red_handed.ui.calibration_view import detection_labels
-from red_handed.ui.main_window import MainWindow
 
 
 class ZoneSettingsUITests(unittest.TestCase):
@@ -52,7 +51,9 @@ class ZoneSettingsUITests(unittest.TestCase):
             root,
             controller,
             settings_store=SettingsStore(self.path),
+            enable_hotkeys=False,
         )
+
         def cleanup_window():
             try:
                 exists = root.winfo_exists()
@@ -84,7 +85,8 @@ class ZoneSettingsUITests(unittest.TestCase):
 
     def test_save_preserves_other_settings_and_survives_restart(self) -> None:
         self.prepare_draft()
-        self.assertFalse(self.window.calibration.save_button.instate(["disabled"]))
+        self.assertFalse(
+            self.window.calibration.save_button.instate(["disabled"]))
 
         self.window.calibration.save_button.invoke()
 
@@ -155,7 +157,8 @@ class ZoneSettingsUITests(unittest.TestCase):
         restarted._refresh_status()
 
         self.assertEqual(restarted.controller.settings, MonitoringSettings())
-        self.assertEqual(self.path.read_text(encoding="utf-8"), "not valid json")
+        self.assertEqual(self.path.read_text(
+            encoding="utf-8"), "not valid json")
         self.assertIn("could not be loaded", restarted.settings_notice.get())
         self.assertIn(
             "Privacy Zone: Unconfigured",
@@ -164,7 +167,8 @@ class ZoneSettingsUITests(unittest.TestCase):
 
     def test_calibration_helper_reads_shared_detection_state(self) -> None:
         self.window.controller.start_monitoring()
-        self.window.controller.state.detection = DetectionResult(person_count=2)
+        self.window.controller.state.detection = DetectionResult(
+            person_count=2)
 
         count, description = detection_labels(self.window.controller.state)
 
