@@ -49,7 +49,9 @@ class MonitoringController:
         self._pending_frame_size: tuple[int, int] | None = None
         self._pending_captured_at = 0.0
         self._last_risk_observation: float | None = None
-
+        
+        # The UI owns the surface and manager; the controller publishes risk.
+        self.protection = None
         self._closed = False
         initial = settings if settings is not None else MonitoringSettings()
         self.risk_evaluator = PrivacyRiskEvaluator(initial)
@@ -57,7 +59,7 @@ class MonitoringController:
 
     @property
     def detection(self) -> DetectionResult | None:
-        """Keep the Round 1 read interface while sharing state with the UI."""
+        """Keep the Phase 1 read interface while sharing state with the UI."""
         return self.state.detection
 
     @property
@@ -84,11 +86,28 @@ class MonitoringController:
         self._cancel_detection()
         self._next_detection_at = self._clock()
 
+    def attach_protection(self, manager) -> None:
+        """Connect or disconnect protection without creating another frame loop."""
+        self.protection = manager
+        self._sync_protection()
+
+    def _sync_protection(self) -> None:
+        """Publish the current risk observation to the protection manager."""
+        if self.protection is None:
+            return
+
+        self.protection.observe_risk(
+            self.state.risk_status,
+            self.state.additional_person_in_zone,
+            self._last_risk_observation,
+            self.settings.recovery_delay,
+        )
     def _reset_risk(self) -> None:
         """Discard timing built from evidence that is no longer valid."""
         self.risk_evaluator.reset()
         self.state.reset_risk()
         self._last_risk_observation = None
+        self._sync_protection()
 
     def _update_risk(self, result: DetectionResult) -> None:
         """FR3.4 / FR4: evaluate boxes against the saved zone on fresh results only."""
@@ -112,6 +131,7 @@ class MonitoringController:
         self.state.additional_person_in_zone = inside
         self.state.risk_status = self.risk_evaluator.update(inside, sampled_at)
         self._last_risk_observation = sampled_at
+        self._sync_protection()
 
     def _camera_failed(self, message: str) -> None:
         """Release the device and return the application to an inactive state."""
@@ -157,7 +177,7 @@ class MonitoringController:
         self._reset_detection()
         self._next_detection_at = self._clock()
         return self.state.start_monitoring()
-
+       
     def read_frame(self) -> Any | None:
         """Read a frame and schedule bounded face detection on it."""
         if self._closed:
@@ -244,9 +264,12 @@ class MonitoringController:
         self.state.stop_monitoring()
         self._reset_detection()
         self._cancel_detection()
+        # Explicit Stop clears automatic protection only.
+        # A separate manual request must remain active.
+        if self.protection is not None:
+            self.protection.stop_automatic()
 
         # Keep the detector available for another Start.
-        # Its native resources are released only when the application closes.
 
     def close(self) -> None:
         """Release camera and detector resources once."""
