@@ -23,6 +23,7 @@ from red_handed.core.settings import ProtectionSettings
 from red_handed.system.hotkey_manager import HotkeyManager, WindowsHotkeyBackend
 from red_handed.ui.protection_surface import TkProtectionSurface
 from red_handed.ui.protection_view import ProtectionView
+from red_handed.ui.application_view import ApplicationView
 
 
 class MainWindow:
@@ -61,6 +62,7 @@ class MainWindow:
         
         # load() already populated both monitoring and protection settings.
         self.protection_settings = self.settings_store.protection_settings
+        self.application_settings = self.settings_store.application_settings
 
         # The surface creates its actual window only when protection is shown.
         self.surface = TkProtectionSurface(
@@ -141,6 +143,11 @@ class MainWindow:
             sidebar,
             text="Protection Mode",
             command=self.show_protection,
+        ).pack(fill=tk.X, pady=3)
+        ttk.Button(
+            sidebar,
+            text="Protected Applications",
+            command=self.show_applications,
         ).pack(fill=tk.X, pady=3)
         content = ttk.Frame(shell)
         content.grid(row=0, column=1, sticky="nsew")
@@ -253,6 +260,14 @@ class MainWindow:
         )
         self.protection_view.grid_remove()
 
+        self.application_view = ApplicationView(
+            content,
+            lambda: self.application_settings,
+            self.save_application_settings,
+        )
+        self.application_view.grid(row=8, column=0, sticky="ew", pady=(8, 0))
+        self.application_view.grid_remove()
+
         ttk.Label(
             content,
             textvariable=self.protection_text,
@@ -273,6 +288,7 @@ class MainWindow:
         self.settings_view.grid_remove()
         self.preview.set_editing(False)
         self.protection_view.grid_remove()
+        self.application_view.grid_remove()
 
     def show_calibration(self) -> None:
         """FR12.3 / FR12.4: share the running preview and current count."""
@@ -280,12 +296,24 @@ class MainWindow:
         self.settings_view.grid_remove()
         self.preview.set_editing(True)
         self.protection_view.grid_remove()
+        self.application_view.grid_remove()
 
     def show_protection(self) -> None:
         """Open protection settings and discard stale edits in that panel."""
         self.show_home()
         self.protection_view.reload()
         self.protection_view.grid()
+
+    def show_applications(self) -> None:
+        """Open protected-application settings and discard stale edits."""
+        self.show_home()
+        self.application_view.reload()
+        self.application_view.grid()
+
+    def save_application_settings(self, settings) -> None:
+        """Persist first; the view shows ValueError/OSError and keeps its edits."""
+        self.settings_store.save(self.controller.settings, applications=settings)
+        self.application_settings = settings
 
     def show_settings(self) -> None:
         self.show_home()
