@@ -13,6 +13,8 @@ from red_handed.detection.person_detector import DetectionResult, PersonDetector
 from red_handed.core.settings import MonitoringSettings
 from red_handed.detection.privacy_zone import split_primary_face
 from red_handed.core.privacy_risk import PrivacyRiskEvaluator
+from red_handed.core.events import EventType, EventAction
+from red_handed.core.system_state import CameraStatus
 
 
 class MonitoringController:
@@ -49,7 +51,8 @@ class MonitoringController:
         self._pending_frame_size: tuple[int, int] | None = None
         self._pending_captured_at = 0.0
         self._last_risk_observation: float | None = None
-        
+        self.recorder = None
+        self._recorded_risk = False
         # The UI owns the surface and manager; the controller publishes risk.
         self.protection = None
         self._closed = False
@@ -93,6 +96,16 @@ class MonitoringController:
 
     def _sync_protection(self) -> None:
         """Publish the current risk observation to the protection manager."""
+        active = self.state.privacy_risk_active
+
+        # Pending recovery remains active, so it must not create another event.
+        if active and not self._recorded_risk and self.recorder is not None:
+            self.recorder.record(
+                EventType.RISK_DETECTED,
+                EventAction.RISK_ACTIVE,
+            )
+
+        self._recorded_risk = active
         if self.protection is None:
             return
 
@@ -102,6 +115,7 @@ class MonitoringController:
             self._last_risk_observation,
             self.settings.recovery_delay,
         )
+
     def _reset_risk(self) -> None:
         """Discard timing built from evidence that is no longer valid."""
         self.risk_evaluator.reset()
@@ -127,18 +141,29 @@ class MonitoringController:
         # Only the other faces are considered additional people.
         _, additional = split_primary_face(result.bounding_boxes)
         width, height = self._pending_frame_size
-        inside = any(zone.contains_face(box, width, height) for box in additional)
+        inside = any(zone.contains_face(box, width, height)
+                     for box in additional)
         self.state.additional_person_in_zone = inside
         self.state.risk_status = self.risk_evaluator.update(inside, sampled_at)
         self._last_risk_observation = sampled_at
         self._sync_protection()
 
     def _camera_failed(self, message: str) -> None:
-        """Release the device and return the application to an inactive state."""
+        """Stop monitoring and record an available-to-unavailable transition."""
+        was_available = (
+            self.state.camera_status is CameraStatus.AVAILABLE
+        )
+
         self.camera.release()
         self.state.set_camera_unavailable(message)
         self._reset_detection()
         self._cancel_detection()
+
+        if was_available and self.recorder is not None:
+            self.recorder.record(
+                EventType.CAMERA_UNAVAILABLE,
+                EventAction.CAMERA_UNAVAILABLE,
+            )
 
     def refresh_camera_availability(self) -> bool:
         """Check whether the camera is usable, including after a failed attempt."""
@@ -177,7 +202,7 @@ class MonitoringController:
         self._reset_detection()
         self._next_detection_at = self._clock()
         return self.state.start_monitoring()
-       
+
     def read_frame(self) -> Any | None:
         """Read a frame and schedule bounded face detection on it."""
         if self._closed:
@@ -211,7 +236,8 @@ class MonitoringController:
                 try:
                     result = pending.result()
                     if not isinstance(result, DetectionResult):
-                        raise TypeError("The detector returned an invalid result.")
+                        raise TypeError(
+                            "The detector returned an invalid result.")
                     self.state.detection = result
                     self.state.detection_error = None
                     self._update_risk(result)
@@ -239,7 +265,8 @@ class MonitoringController:
                 if self.settings.privacy_zone is not None else None
             )
             self._pending_captured_at = now
-            self._pending = self._executor.submit(self.detector.detect, frame.copy())
+            self._pending = self._executor.submit(
+                self.detector.detect, frame.copy())
             self._pending_session = self._session
         except Exception:
             self._reset_risk()

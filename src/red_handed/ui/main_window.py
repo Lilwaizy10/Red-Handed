@@ -24,6 +24,11 @@ from red_handed.system.hotkey_manager import HotkeyManager, WindowsHotkeyBackend
 from red_handed.ui.protection_surface import TkProtectionSurface
 from red_handed.ui.protection_view import ProtectionView
 from red_handed.ui.application_view import ApplicationView
+from red_handed.core.applications import ActiveApplication, ApplicationAwarePolicy
+from red_handed.core.events import EventRecorder
+from red_handed.storage.event_store import EventStore
+from red_handed.system.active_application import ActiveApplicationDetector
+from red_handed.ui.event_history_view import EventHistoryView
 
 
 class MainWindow:
@@ -48,6 +53,12 @@ class MainWindow:
         self._test_job = None
         self._hotkey_error = None
         self.hotkeys = None
+        self._foreground_job = None
+        self._foreground_detector = None
+        self._last_external_application = ActiveApplication(
+            error="Foreground application has not been checked."
+        )
+        self.recorder = None
         # Tests can inject a temporary store instead of using real user settings.
         self.settings_store = settings_store if settings_store is not None else SettingsStore()
         self._frame_job: str | None = None
@@ -91,6 +102,27 @@ class MainWindow:
 
         self._configure_window()
         self._build_layout()
+        # Keep history beside the selected settings file. Tests using temporary
+        # settings therefore also use temporary history rather than real user data.
+        event_path = self.settings_store.path.with_name("events.json")
+        self.recorder = EventRecorder(EventStore(event_path))
+
+        self.controller.recorder = self.recorder
+        self.protection.recorder = self.recorder
+
+        self.history_view = EventHistoryView(self.content, self.recorder)
+        self.history_view.grid(
+            row=8, column=0, sticky="nsew", pady=(8, 0)
+        )
+        self.history_view.grid_remove()
+
+        # An enabled gate starts blocked until a foreground app is known.
+        self.protection.set_application_allowed(
+            ApplicationAwarePolicy.allows(
+                self.application_settings,
+                self._last_external_application,
+            )
+        )
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self._camera_check_job = self.root.after(100, self._initial_camera_check)
         self.controller.attach_protection(self.protection)
@@ -106,6 +138,10 @@ class MainWindow:
             self._hotkey_job = self.root.after(50, self._poll_hotkeys)
 
         self._refresh_protection()
+        # Poll independently of hotkeys and camera monitoring.
+        self._foreground_job = self.root.after(
+            250, self._poll_foreground_application
+        )
 
     def _configure_window(self) -> None:
         self.root.title("Red-Handed")
@@ -149,7 +185,13 @@ class MainWindow:
             text="Protected Applications",
             command=self.show_applications,
         ).pack(fill=tk.X, pady=3)
+        ttk.Button(
+            sidebar,
+            text="Event History",
+            command=self.show_history,
+        ).pack(fill=tk.X, pady=3)
         content = ttk.Frame(shell)
+        self.content = content
         content.grid(row=0, column=1, sticky="nsew")
         content.columnconfigure(0, weight=1)
         content.rowconfigure(4, weight=1)
@@ -289,6 +331,7 @@ class MainWindow:
         self.preview.set_editing(False)
         self.protection_view.grid_remove()
         self.application_view.grid_remove()
+        self.history_view.grid_remove()
 
     def show_calibration(self) -> None:
         """FR12.3 / FR12.4: share the running preview and current count."""
@@ -297,6 +340,7 @@ class MainWindow:
         self.preview.set_editing(True)
         self.protection_view.grid_remove()
         self.application_view.grid_remove()
+        self.history_view.grid_remove()
 
     def show_protection(self) -> None:
         """Open protection settings and discard stale edits in that panel."""
@@ -311,9 +355,75 @@ class MainWindow:
         self.application_view.grid()
 
     def save_application_settings(self, settings) -> None:
-        """Persist first; the view shows ValueError/OSError and keeps its edits."""
-        self.settings_store.save(self.controller.settings, applications=settings)
+        """Persist first, then immediately apply the updated automatic gate."""
+        self.settings_store.save(
+            self.controller.settings,
+            applications=settings,
+        )
         self.application_settings = settings
+
+        allowed = ApplicationAwarePolicy.allows(
+            settings,
+            self._last_external_application,
+        )
+        self.protection.set_application_allowed(allowed)
+        self._refresh_protection()
+    def show_history(self):
+        """Open the history panel and take a fresh recorder snapshot."""
+        self.show_home()
+        self.history_view.refresh(force=True)
+        self.history_view.grid()
+
+    def _poll_foreground_application(self):
+        """Reevaluate automatic protection without modifying risk timing."""
+        self._foreground_job = None
+        if self._closed:
+            return
+
+        try:
+            if self._foreground_detector is None:
+                self._foreground_detector = ActiveApplicationDetector()
+
+            protection_window = None
+            window = self.surface.window
+            if window is not None and self.controller.state.protection_active:
+                protection_window = window.winfo_id()
+
+            active = self._foreground_detector.detect(protection_window)
+
+            if not active.protection_surface:
+                self._last_external_application = active
+            elif not (
+                window is not None and self.controller.state.protection_active
+            ):
+                # Our ordinary dashboard is not a protected external application.
+                self._last_external_application = ActiveApplication(
+                    error="Red-Handed has focus."
+                )
+
+            # When our visible protection surface takes focus, retain the last
+            # external app. Otherwise the overlay could disable its own gate.
+            allowed = ApplicationAwarePolicy.allows(
+                self.application_settings,
+                self._last_external_application,
+            )
+        except Exception:
+            self._last_external_application = ActiveApplication(
+                error="Foreground application unavailable."
+            )
+            allowed = ApplicationAwarePolicy.allows(
+                self.application_settings,
+                self._last_external_application,
+            )
+
+        self.protection.set_application_allowed(allowed)
+        self._refresh_protection()
+        self.history_view.refresh()
+
+        if not self._closed:
+            self._foreground_job = self.root.after(
+                250, self._poll_foreground_application
+            )
 
     def show_settings(self) -> None:
         self.show_home()
@@ -656,6 +766,7 @@ class MainWindow:
             "_frame_job",
             "_hotkey_job",
             "_test_job",
+            "_foreground_job",
         ):
             job = getattr(self, attribute, None)
             setattr(self, attribute, None)
@@ -676,6 +787,11 @@ class MainWindow:
             self.controller.close,
         ])
 
+        # Existing headless test fixtures may not construct a recorder.
+        # Close it last so any already-submitted writes finish before exit.
+        recorder = getattr(self, "recorder", None)
+        if recorder is not None:
+            cleanup_steps.append(recorder.close)
         # Remove the surface and release the shortcut before waiting for the
         # detector worker. One failed cleanup must not skip the remaining steps.
         for cleanup in cleanup_steps:
