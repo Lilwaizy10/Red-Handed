@@ -8,6 +8,7 @@ import tempfile
 
 from red_handed.core.settings import MonitoringSettings, Sensitivity, ProtectionMode, ProtectionSettings
 from red_handed.detection.privacy_zone import PrivacyZone
+from red_handed.core.applications import ApplicationSettings, ProtectedApplication
 
 
 def default_settings_path() -> Path:
@@ -21,10 +22,12 @@ class SettingsStore:
         self.last_error: str | None = None
         # Only up to date after load() or save(); use load_protection() to be sure.
         self.protection_settings = ProtectionSettings()
+        self.application_settings = ApplicationSettings()
 
     def load(self) -> MonitoringSettings:
         self.last_error = None
         self.protection_settings = ProtectionSettings()
+        self.application_settings = ApplicationSettings()
 
         # Step 1: the file itself must be readable JSON in a format we know.
         try:
@@ -46,6 +49,14 @@ class SettingsStore:
         except (ValueError, TypeError, KeyError) as error:
             self.protection_settings = ProtectionSettings()
             problems.append(f"protection settings ({error})")
+
+        # Step 2b: application block (optional, so older v1 files still load).
+        try:
+            if "applications" in data:
+                self.application_settings = self._parse_applications(data["applications"])
+        except (ValueError, TypeError, KeyError) as error:
+            self.application_settings = ApplicationSettings()
+            problems.append(f"application settings ({error})")
 
         # Step 3: monitoring block (zone, sensitivity, delays).
         try:
@@ -73,7 +84,15 @@ class SettingsStore:
     def _parse_protection(data) -> ProtectionSettings:
         return ProtectionSettings(ProtectionMode(data['mode']), data['hotkey'])
 
-    def save(self, settings: MonitoringSettings, *, protection: ProtectionSettings | None = None) -> None:
+    @staticmethod
+    def _parse_applications(data):
+        if not isinstance(data, dict) or not isinstance(data.get('protected_applications'), list):
+            raise ValueError('Invalid application settings.')
+        return ApplicationSettings(data['application_aware_enabled'],
+            tuple(ProtectedApplication(**item) for item in data['protected_applications']))
+
+    def save(self, settings: MonitoringSettings, *, protection: ProtectionSettings | None = None,
+             applications: ApplicationSettings | None = None) -> None:
         """Validate and replace atomically; errors leave previous settings intact."""
         if not isinstance(settings, MonitoringSettings):
             raise ValueError("Invalid settings.")
@@ -92,6 +111,18 @@ class SettingsStore:
             if not isinstance(protection, ProtectionSettings):
                 raise ValueError('Invalid protection settings.')
             data['protection'] = asdict(protection)
+        # Same rule for applications: saving other settings must not erase them.
+        if applications is None:
+            try:
+                old = json.loads(self.path.read_text(encoding='utf-8'))
+                if isinstance(old, dict) and 'applications' in old:
+                    applications = self._parse_applications(old['applications'])
+            except (FileNotFoundError, ValueError, TypeError, KeyError):
+                pass
+        if applications is not None:
+            if not isinstance(applications, ApplicationSettings):
+                raise ValueError('Invalid application settings.')
+            data['applications'] = asdict(applications)
         text = json.dumps(data, indent=2, allow_nan=False) + "\n"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary: Path | None = None
@@ -106,6 +137,8 @@ class SettingsStore:
             self.last_error = None
             if protection is not None:
                 self.protection_settings = protection
+            if applications is not None:
+                self.application_settings = applications
         finally:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
