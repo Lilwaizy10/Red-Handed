@@ -5,6 +5,7 @@ from typing import Protocol
 
 from red_handed.core.privacy_risk import RiskStatus
 from red_handed.core.settings import ProtectionMode
+from red_handed.core.events import EventType, EventAction
 
 
 class ProtectionSurface(Protocol):
@@ -22,6 +23,13 @@ class ProtectionManager:
         self._safe_since = None
         self._closed = False
         self.last_transition_seconds = 0.0
+        # Keep the underlying automatic request separate from the app gate.
+        # Switching applications must not reset privacy-risk timing.
+        self._automatic_requested = False
+        self._application_allowed = True
+
+        self.recorder = None
+        self._recorded_requests = (False, False)
 
     @property
     def source(self):
@@ -37,6 +45,9 @@ class ProtectionManager:
     def _sync(self):
         if self._closed:
             return
+        self.state.automatic_protection_requested = (
+            self._automatic_requested and self._application_allowed
+        )
         desired = ((self.state.selected_protection_mode, self.state.test_protection_requested, self.source)
                    if self.source else None)
         if desired == self._presentation and not self.state.protection_error:
@@ -54,7 +65,54 @@ class ProtectionManager:
             self._presentation = desired
             self.state.protection_active = desired is not None
             self.state.protection_error = None
+            self._record_transitions()
         self.last_transition_seconds = perf_counter() - began
+
+    def set_application_allowed(self, allowed):
+        """Reapply the automatic gate without touching risk or manual requests."""
+        self._application_allowed = bool(allowed)
+        self._sync()
+
+    def _record_transitions(self):
+        """Record request transitions only after successful presentation."""
+        current = (
+            self.state.automatic_protection_requested,
+            self.state.manual_protection_requested,
+        )
+        previous = self._recorded_requests
+
+        if self.recorder is not None:
+            if not self.state.protection_active:
+                action = EventAction.RESTORED
+            elif any(previous):
+                action = EventAction.STILL_PROTECTED
+            else:
+                action = EventAction.PROTECTED
+
+            transitions = (
+                (
+                    previous[0],
+                    current[0],
+                    EventType.AUTOMATIC_ACTIVATED,
+                    EventType.AUTOMATIC_DEACTIVATED,
+                ),
+                (
+                    previous[1],
+                    current[1],
+                    EventType.MANUAL_ACTIVATED,
+                    EventType.MANUAL_DEACTIVATED,
+                ),
+            )
+            for before, after, activated, deactivated in transitions:
+                if before != after:
+                    self.recorder.record(
+                        activated if after else deactivated,
+                        action,
+                        self.state.selected_protection_mode,
+                    )
+
+        # Unchanged observations must never produce a row per camera frame.
+        self._recorded_requests = current
 
     def select_mode(self, mode):
         if not isinstance(mode, ProtectionMode):
@@ -63,9 +121,12 @@ class ProtectionManager:
         self._sync()
 
     def set_automatic(self, active):
-        self.state.automatic_protection_requested = bool(active)
-        if active:
+        # Preserve the risk-derived request even while the app gate blocks it.
+        self._automatic_requested = bool(active)
+
+        if active and self._application_allowed:
             self.state.test_protection_requested = False
+
         self._sync()
 
     def toggle_manual(self):
@@ -83,7 +144,7 @@ class ProtectionManager:
         Repeated UI ticks cannot advance this guard: it uses capture timestamps.
         """
         if status is None or sampled_at is None:
-            if self.state.automatic_protection_requested:
+            if self._automatic_requested:
                 self._uncertain = True
                 self._safe_since = None
             return
@@ -129,3 +190,4 @@ class ProtectionManager:
             self.state.manual_protection_requested = False
             self.state.test_protection_requested = False
             self._presentation = None
+            self._automatic_requested = False
