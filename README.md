@@ -2,7 +2,7 @@
 
 Red-Handed is a Windows desktop privacy-protection system intended to reduce shoulder-surfing by detecting additional people within a configured privacy zone and activating a selected screen-protection mode.
 
-**Current status:** Round 4 protection integration implemented; validation results are recorded in docs/phase4_testing.md.
+**Current status:** Phase 5 application/history integration implemented; validation results are recorded in docs/phase5_testing.md.
 
 **Initial target:** 64-bit Windows 10 and Windows 11
 
@@ -64,8 +64,21 @@ Status / Calibration includes a labelled five-second Test Protection action.
 A real automatic request is not cleared by the test timeout.
 
 Protection covers the primary display only. It is not a Windows lock screen
-or secure desktop. Application-aware protection and event history are not yet
-connected.
+or secure desktop. 
+
+## Protected applications and event history
+
+Protected Applications controls whether automatic protection requires a matching
+foreground executable. Matching uses normalized full paths. An enabled empty
+list or unknown foreground blocks automatic protection. Manual protection
+remains independent.
+
+Event History displays local timestamps and privacy-event transitions.
+History is stored beside settings in events.json and survives restart.
+Clear History requires confirmation and persists across restart.
+
+History stores event metadata only. Recording errors are displayed in the
+history panel and do not disable screen protection.
 
 ## Folder structure
 
