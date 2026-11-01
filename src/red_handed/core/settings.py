@@ -9,6 +9,7 @@ from red_handed.system.hotkey_manager import parse_hotkey
 class ProtectionMode(str, Enum):
     PRIVACY_OVERLAY = "Privacy Overlay"
     SCREEN_BLACKOUT = "Screen Blackout"
+    DECOY_WEBSITE = "Decoy Website"
 
 
 @dataclass(frozen=True)
@@ -17,17 +18,22 @@ class ProtectionSettings:
 
     mode: ProtectionMode = ProtectionMode.PRIVACY_OVERLAY
     hotkey: str = "Ctrl+Alt+P"
+    #url: str = "https://www.google.com"
 
     def __post_init__(self):
         if not isinstance(self.mode, ProtectionMode):
-            raise ValueError("Select Privacy Overlay or Screen Blackout.")
+            raise ValueError("Select Privacy Overlay, Screen Blackout, or Open Preferred Website option.")
         # Reject non-text first: a hand-edited settings file could hold a number
         # or null here, and parse_hotkey might raise AttributeError (which the
         # settings store does not catch) instead of ValueError.
         if not isinstance(self.hotkey, str):
             raise ValueError("Hotkey must be text.")
+        '''
+        if not isinstance(self.url, str):
+            raise ValueError("URL must be text.")
         # Store the normalised form so equivalent spellings compare equal.
         object.__setattr__(self, 'hotkey', parse_hotkey(self.hotkey).text)
+        '''
 
 
 class Sensitivity(str, Enum):
