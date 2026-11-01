@@ -13,10 +13,15 @@ class ProtectionSurface(Protocol):
     def hide(self) -> None: ...
     def close(self) -> None: ...
 
+class WebOpener(Protocol):
+    def open(self) -> None: ...
+    def close(self) -> None: ...
+
 
 class ProtectionManager:
-    def __init__(self, state, surface: ProtectionSurface, mode=ProtectionMode.PRIVACY_OVERLAY):
+    def __init__(self, state, web_opener: WebOpener, surface: ProtectionSurface, mode=ProtectionMode.PRIVACY_OVERLAY):
         self.state, self.surface = state, surface
+        self.web_opener = web_opener
         self.state.selected_protection_mode = mode
         self._presentation = None
         self._uncertain = False
@@ -56,11 +61,35 @@ class ProtectionManager:
         try:
             if desired is None:
                 self.surface.hide()
+                self.web_opener.close()
+            elif desired[0] is ProtectionMode.DECOY_WEBSITE:
+                if self._presentation is None or self._presentation[0] is not ProtectionMode.DECOY_WEBSITE:
+                    self.web_opener.open()
+                
+                self.surface.hide()
             else:
+                self.web_opener.close()
                 self.surface.show(desired[0], test=desired[1], source=desired[2])
         except Exception as error:
             # UC15.EX.1: do not claim a failed presentation is protecting the screen.
-            self.state.protection_error = f"Protection surface failed: {error}"
+            self.state.protection_error = f"Protection Surface/Decoy Window failed: {error}"
+            try:
+                self.web_opener.close()
+            except Exception:
+                pass
+            '''
+            #scenario where can close privacy overlay/screen blackout 
+            #screen but cannot open decoy website (rollback option)
+            if( 
+                self._presentation is not None 
+                and self._presentation[0] is not ProtectionMode.DECOY_WEBSITE 
+                and desired is not None
+                and desired[0] is ProtectionMode.DECOY_WEBSITE
+            ):
+            '''
+                
+                #previous = self._presentation
+                #self.surface.show(previous[0], test=previous[1], source=previous[2])
         else:
             self._presentation = desired
             self.state.protection_active = desired is not None
@@ -185,9 +214,12 @@ class ProtectionManager:
         try:
             self.surface.close()
         finally:
-            self.state.protection_active = False
-            self.state.automatic_protection_requested = False
-            self.state.manual_protection_requested = False
-            self.state.test_protection_requested = False
-            self._presentation = None
-            self._automatic_requested = False
+            try:
+                self.web_opener.close()
+            finally:
+                self.state.protection_active = False
+                self.state.automatic_protection_requested = False
+                self.state.manual_protection_requested = False
+                self.state.test_protection_requested = False
+                self._presentation = None
+                self._automatic_requested = False
