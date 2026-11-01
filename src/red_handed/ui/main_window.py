@@ -29,6 +29,7 @@ from red_handed.core.events import EventRecorder
 from red_handed.storage.event_store import EventStore
 from red_handed.system.active_application import ActiveApplicationDetector
 from red_handed.ui.event_history_view import EventHistoryView
+from red_handed.ui.static_web_opener import StaticWebOpener
 
 
 class MainWindow:
@@ -76,6 +77,7 @@ class MainWindow:
         self.application_settings = self.settings_store.application_settings
 
         # The surface creates its actual window only when protection is shown.
+        self.web_opener = StaticWebOpener()
         self.surface = TkProtectionSurface(
             root,
             toggle_manual=self.toggle_manual,
@@ -85,6 +87,7 @@ class MainWindow:
         )
         self.protection = ProtectionManager(
             controller.state,
+            self.web_opener,
             self.surface,
             self.protection_settings.mode,
         )
