@@ -38,6 +38,7 @@ class ProtectionView(ttk.LabelFrame):
         self.mode = tk.StringVar(master=self)      # selected radio button value
         self.hotkey = tk.StringVar(master=self)    # text typed in the hotkey box
         self.feedback = tk.StringVar(master=self)  # success / error message line
+        #self.url = tk.StringVar(master=self) #url typed in the url box
 
         # Layout 
         # Let column 0 stretch when the window is resized so text can reflow.
@@ -46,29 +47,51 @@ class ProtectionView(ttk.LabelFrame):
         # One radio button per protection mode. Rows 0..N-1 are used.
         modes = list(ProtectionMode)
         for row, mode in enumerate(modes):
-            ttk.Radiobutton(
-                self,
-                text=mode.value,
-                value=mode.value,
-                variable=self.mode,
-            ).grid(row=row, column=0, sticky='w')
+            if mode is ProtectionMode.DECOY_WEBSITE:
+                ttk.Radiobutton(
+                    self,
+                    text=mode.value + " (Requires Google Chrome)",
+                    value=mode.value,
+                    variable=self.mode,
+                ).grid(row=row, column=0, sticky='w')
+            else:
+                ttk.Radiobutton(
+                    self,
+                    text=mode.value,
+                    value=mode.value,
+                    variable=self.mode,
+                ).grid(row=row, column=0, sticky='w')
 
         # Everything below is positioned relative to 'base' (the number of
         # modes), so adding a new ProtectionMode never causes widgets to
         # overlap. Previously these row numbers were hard-coded.
         base = len(modes)
 
+        #create URL text & textbar widgets 
+        #self.url_label = ttk.Label(self, text='Enter website URL (e.g https://www.google.com): ')
+        #self.url_entry = ttk.Entry(self, textvariable=self.url, width=28)
+
+        #put these widgets on a grid and remember its position
+        #self.url_label.grid(row=base, column=0, sticky='w')  
+        #self.url_entry.grid(row=base+1, column=0, sticky='w')
+
+        #Hide these widgets cause we dw to display it(UI becomes too cluttered), only shows when you choose the website option
+        #self.url_label.grid_remove()
+        #self.url_entry.grid_remove()
+
+
+        #Hotkey
         ttk.Label(
             self, text='Emergency hotkey (Ctrl/Alt/Shift + A-Z, 0-9, F1-F11):'
         ).grid(row=base, column=0, sticky='w')
 
         ttk.Entry(self, textvariable=self.hotkey, width=28).grid(
-            row=base + 1, column=0, sticky='w'
+            row=base+1, column=0, sticky='w'
         )
 
         ttk.Button(
             self, text='Save Protection Settings', command=self.save
-        ).grid(row=base + 1, column=1, padx=8)
+        ).grid(row=0, column=1, padx=8)
 
         # Static note explaining the current limitations to the user.
         self._note_label = ttk.Label(
@@ -77,11 +100,11 @@ class ProtectionView(ttk.LabelFrame):
                  'Only the primary display is covered. Application-aware protection is not implemented.',
             wraplength=650,
         )
-        self._note_label.grid(row=base + 2, column=0, columnspan=2, sticky='w')
+        self._note_label.grid(row=base+2, column=0, columnspan=2, sticky='w')
 
         # Status line: shows "saved" or "not saved: <reason>".
         self._feedback_label = ttk.Label(self, textvariable=self.feedback, wraplength=650)
-        self._feedback_label.grid(row=base + 3, column=0, columnspan=2, sticky='w')
+        self._feedback_label.grid(row=base+3, column=0, columnspan=2, sticky='w')
 
         # Re-wrap the two long labels whenever the panel changes width.
         self.bind('<Configure>', self._on_resize)
@@ -95,7 +118,7 @@ class ProtectionView(ttk.LabelFrame):
         self._note_label.configure(wraplength=wrap)
         self._feedback_label.configure(wraplength=wrap)
 
-    def reload(self):
+    def reload(self): 
         """Load saved settings into the widgets, discarding unsaved edits.
 
         Errors are shown in the feedback line rather than raised, so a missing
@@ -108,7 +131,9 @@ class ProtectionView(ttk.LabelFrame):
             return
 
         self.mode.set(settings.mode.value)
+        #self.update_url_widgets() #restores widgets if PPS is closed at OPEN_PREFERRED_WEBSITE option chosen
         self.hotkey.set(settings.hotkey)
+        #self.url.set(settings.url)
         self.feedback.set('')  # clear any old message
 
     def save(self):
@@ -121,6 +146,7 @@ class ProtectionView(ttk.LabelFrame):
 
         # strip() removes accidental leading/trailing spaces from the hotkey.
         hotkey = self.hotkey.get().strip()
+        #url = self.url.get().strip()
 
         try:
             # ProtectionMode(...) turns the radio value back into an enum member
@@ -133,3 +159,12 @@ class ProtectionView(ttk.LabelFrame):
             # Runs only if no exception was raised above.
             self.hotkey.set(hotkey)  # show the cleaned-up value back to the user
             self.feedback.set('Protection mode and hotkey saved.')
+    '''
+    def update_url_widgets(self):
+        if(self.mode.get() == ProtectionMode.OPEN_PREFERRED_WEBSITE.value):
+            self.url_label.grid()
+            self.url_entry.grid()
+        else:
+            self.url_label.grid_remove()
+            self.url_entry.grid_remove()
+    '''
