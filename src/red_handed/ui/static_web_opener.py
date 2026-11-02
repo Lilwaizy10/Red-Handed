@@ -1,4 +1,3 @@
-from selenium import webdriver
 from pathlib import Path
 
 class StaticWebOpener:
@@ -8,6 +7,9 @@ class StaticWebOpener:
         self.browser_pid = None
     
     def open(self):
+        # Load Selenium only when the decoy is used.
+        from selenium import webdriver
+
         html_url = self._html_path.resolve().as_uri()
         options = webdriver.ChromeOptions()
         options.add_argument("--start-maximized")

@@ -19,7 +19,14 @@ class WebOpener(Protocol):
 
 
 class ProtectionManager:
-    def __init__(self, state, web_opener: WebOpener, surface: ProtectionSurface, mode=ProtectionMode.PRIVACY_OVERLAY):
+    def __init__(
+        self,
+        state,
+        surface: ProtectionSurface,
+        mode=ProtectionMode.PRIVACY_OVERLAY,
+        *,
+        web_opener: WebOpener | None = None,
+    ):
         self.state, self.surface = state, surface
         self.web_opener = web_opener
         self.state.selected_protection_mode = mode
@@ -61,20 +68,23 @@ class ProtectionManager:
         try:
             if desired is None:
                 self.surface.hide()
-                self.web_opener.close()
+                if self.web_opener is not None:
+                    self.web_opener.close()
             elif desired[0] is ProtectionMode.DECOY_WEBSITE:
                 if self._presentation is None or self._presentation[0] is not ProtectionMode.DECOY_WEBSITE:
                     self.web_opener.open()
                 
                 self.surface.hide()
             else:
-                self.web_opener.close()
+                if self.web_opener is not None:
+                    self.web_opener.close()
                 self.surface.show(desired[0], test=desired[1], source=desired[2])
         except Exception as error:
             # UC15.EX.1: do not claim a failed presentation is protecting the screen.
             self.state.protection_error = f"Protection Surface/Decoy Window failed: {error}"
             try:
-                self.web_opener.close()
+                if self.web_opener is not None:
+                    self.web_opener.close()
             except Exception:
                 pass
         else:
@@ -202,7 +212,8 @@ class ProtectionManager:
             self.surface.close()
         finally:
             try:
-                self.web_opener.close()
+                if self.web_opener is not None:
+                    self.web_opener.close()
             finally:
                 self.state.protection_active = False
                 self.state.automatic_protection_requested = False

@@ -87,9 +87,9 @@ class MainWindow:
         )
         self.protection = ProtectionManager(
             controller.state,
-            self.web_opener,
             self.surface,
             self.protection_settings.mode,
+            web_opener=self.web_opener,
         )
 
         self.protection_text = tk.StringVar(master=root, value="Protection: Inactive")
