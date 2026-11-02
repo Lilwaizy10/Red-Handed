@@ -13,10 +13,29 @@ class ProtectionSurface(Protocol):
     def hide(self) -> None: ...
     def close(self) -> None: ...
 
+class WebOpener(Protocol):
+    ready: bool
+    starting: bool
+    last_error: str | None
+
+    def open(self) -> None: ...
+    def close(self) -> None: ...
+    def shutdown(self) -> None: ...
+
 
 class ProtectionManager:
-    def __init__(self, state, surface: ProtectionSurface, mode=ProtectionMode.PRIVACY_OVERLAY):
+    def __init__(
+        self,
+        state,
+        surface: ProtectionSurface,
+        mode=ProtectionMode.PRIVACY_OVERLAY,
+        *,
+        web_opener: WebOpener | None = None,
+    ):
         self.state, self.surface = state, surface
+        self.web_opener = web_opener
+        self.active_mode = None
+        self.notice = None
         self.state.selected_protection_mode = mode
         self._presentation = None
         self._uncertain = False
@@ -48,21 +67,60 @@ class ProtectionManager:
         self.state.automatic_protection_requested = (
             self._automatic_requested and self._application_allowed
         )
-        desired = ((self.state.selected_protection_mode, self.state.test_protection_requested, self.source)
+        desired = ((self.state.selected_protection_mode,
+                    self.state.test_protection_requested, self.source)
                    if self.source else None)
-        if desired == self._presentation and not self.state.protection_error:
+        decoy = desired is not None and desired[0] is ProtectionMode.DECOY_WEBSITE
+        # Check the browser even when the protection request has not changed.
+        if desired == self._presentation and not self.state.protection_error and not decoy:
             return
+
         began = perf_counter()
         try:
+            notice = None
             if desired is None:
                 self.surface.hide()
+                if self.web_opener is not None:
+                    self.web_opener.close()
+                actual_mode = None
+            elif decoy:
+                if self.web_opener is None:
+                    raise RuntimeError("No decoy browser is configured.")
+                self.web_opener.open()
+                if self.web_opener.ready:
+                    actual_mode = ProtectionMode.DECOY_WEBSITE
+                    if self.active_mode is not actual_mode:
+                        self.surface.hide()
+                else:
+                    # Cover the screen while Chrome starts, recovers or fails.
+                    actual_mode = ProtectionMode.PRIVACY_OVERLAY
+                    if self.web_opener.last_error:
+                        notice = "Decoy unavailable; Privacy Overlay is active. " + self.web_opener.last_error
+                    else:
+                        notice = "Decoy starting; Privacy Overlay is active."
+                    if self.active_mode is not actual_mode or desired != self._presentation:
+                        self.surface.show(actual_mode, test=desired[1], source=desired[2])
             else:
-                self.surface.show(desired[0], test=desired[1], source=desired[2])
+                actual_mode = desired[0]
+                self.surface.show(actual_mode, test=desired[1], source=desired[2])
+                if self.web_opener is not None:
+                    self.web_opener.close()
         except Exception as error:
-            # UC15.EX.1: do not claim a failed presentation is protecting the screen.
-            self.state.protection_error = f"Protection surface failed: {error}"
+            # Clear the previous result so the next attempt actually retries.
+            self._presentation = None
+            self.active_mode = None
+            self.notice = None
+            self.state.protection_active = False
+            self.state.protection_error = f"Protection failed: {error}"
+            if self.web_opener is not None:
+                try:
+                    self.web_opener.close()
+                except Exception:
+                    pass
         else:
             self._presentation = desired
+            self.active_mode = actual_mode
+            self.notice = notice
             self.state.protection_active = desired is not None
             self.state.protection_error = None
             self._record_transitions()
@@ -108,7 +166,7 @@ class ProtectionManager:
                     self.recorder.record(
                         activated if after else deactivated,
                         action,
-                        self.state.selected_protection_mode,
+                        self.active_mode or self.state.selected_protection_mode,
                     )
 
         # Unchanged observations must never produce a row per camera frame.
@@ -185,9 +243,15 @@ class ProtectionManager:
         try:
             self.surface.close()
         finally:
-            self.state.protection_active = False
-            self.state.automatic_protection_requested = False
-            self.state.manual_protection_requested = False
-            self.state.test_protection_requested = False
-            self._presentation = None
-            self._automatic_requested = False
+            try:
+                if self.web_opener is not None:
+                    self.web_opener.shutdown()
+            finally:
+                self.state.protection_active = False
+                self.state.automatic_protection_requested = False
+                self.state.manual_protection_requested = False
+                self.state.test_protection_requested = False
+                self._presentation = None
+                self._automatic_requested = False
+                self.active_mode = None
+                self.notice = None

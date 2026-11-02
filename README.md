@@ -50,8 +50,17 @@ unavailable risk. Sensitivity is saved but has no defined behavioural effect.
 
 ## Screen protection
 
-Open Protection Mode to choose Privacy Overlay or Screen Blackout and configure
-the emergency shortcut. The default shortcut is Ctrl+Alt+P.
+Open Protection Mode to choose Privacy Overlay, Screen Blackout, or Decoy Website
+and configure the emergency shortcut. The default shortcut is Ctrl+Alt+P.
+
+Decoy Website requires Google Chrome and Selenium from requirements.txt.
+Browser operations run in a background worker. Privacy Overlay covers the
+primary display while the decoy starts or is unavailable; the dashboard shows
+the actual active mode. Closing the decoy restores the overlay on the next
+poll and triggers a browser retry. The decoy is a maximized ordinary browser
+window, so it does not provide the overlay's topmost/full-display coverage.
+Application-aware protection retains the preceding application's eligibility
+while Chrome starts and while the decoy has focus.
 
 Emergency Protect and the shortcut toggle manual protection, including when
 monitoring is stopped or camera access is unavailable.

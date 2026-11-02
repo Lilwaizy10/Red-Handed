@@ -4,3 +4,5 @@ opencv-contrib-python>=4.14.0.94,<5
 mediapipe>=1.0.1,<1.1
 # Convert camera frames into Tkinter-compatible preview images.
 Pillow>=10.0,<13
+# Open and close static chrome browser
+selenium==4.52.0

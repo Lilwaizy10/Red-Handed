@@ -29,6 +29,7 @@ from red_handed.core.events import EventRecorder
 from red_handed.storage.event_store import EventStore
 from red_handed.system.active_application import ActiveApplicationDetector
 from red_handed.ui.event_history_view import EventHistoryView
+from red_handed.ui.static_web_opener import StaticWebOpener
 
 
 class MainWindow:
@@ -76,6 +77,7 @@ class MainWindow:
         self.application_settings = self.settings_store.application_settings
 
         # The surface creates its actual window only when protection is shown.
+        self.web_opener = StaticWebOpener()
         self.surface = TkProtectionSurface(
             root,
             toggle_manual=self.toggle_manual,
@@ -87,6 +89,7 @@ class MainWindow:
             controller.state,
             self.surface,
             self.protection_settings.mode,
+            web_opener=self.web_opener,
         )
 
         self.protection_text = tk.StringVar(master=root, value="Protection: Inactive")
@@ -390,10 +393,16 @@ class MainWindow:
                 protection_window = window.winfo_id()
 
             active = self._foreground_detector.detect(protection_window)
-
-            if not active.protection_surface:
+            is_decoy_website = (
+                active.process_id is not None
+                and active.process_id == self.web_opener.browser_pid
+            )
+            # Chrome can take focus before its constructor returns its PID.
+            # Retain the preceding app during that brief startup interval.
+            decoy_starting = self.web_opener.starting
+            if not active.protection_surface and not is_decoy_website and not decoy_starting:
                 self._last_external_application = active
-            elif not (
+            elif active.protection_surface and not (
                 window is not None and self.controller.state.protection_active
             ):
                 # Our ordinary dashboard is not a protected external application.
@@ -643,8 +652,9 @@ class MainWindow:
             )
         elif state.protection_active:
             self.protection_text.set(
-                f"Protection: {state.selected_protection_mode.value} "
+                f"Protection: {self.protection.active_mode.value} "
                 f"({self.protection.source})"
+                + (f" — {self.protection.notice}" if self.protection.notice else "")
             )
         else:
             self.protection_text.set("Protection: Inactive")

@@ -46,29 +46,38 @@ class ProtectionView(ttk.LabelFrame):
         # One radio button per protection mode. Rows 0..N-1 are used.
         modes = list(ProtectionMode)
         for row, mode in enumerate(modes):
-            ttk.Radiobutton(
-                self,
-                text=mode.value,
-                value=mode.value,
-                variable=self.mode,
-            ).grid(row=row, column=0, sticky='w')
+            if mode is ProtectionMode.DECOY_WEBSITE:
+                ttk.Radiobutton(
+                    self,
+                    text=mode.value + " (Requires Google Chrome)",
+                    value=mode.value,
+                    variable=self.mode,
+                ).grid(row=row, column=0, sticky='w')
+            else:
+                ttk.Radiobutton(
+                    self,
+                    text=mode.value,
+                    value=mode.value,
+                    variable=self.mode,
+                ).grid(row=row, column=0, sticky='w')
 
         # Everything below is positioned relative to 'base' (the number of
         # modes), so adding a new ProtectionMode never causes widgets to
         # overlap. Previously these row numbers were hard-coded.
         base = len(modes)
 
+        #Hotkey
         ttk.Label(
             self, text='Emergency hotkey (Ctrl/Alt/Shift + A-Z, 0-9, F1-F11):'
         ).grid(row=base, column=0, sticky='w')
 
         ttk.Entry(self, textvariable=self.hotkey, width=28).grid(
-            row=base + 1, column=0, sticky='w'
+            row=base+1, column=0, sticky='w'
         )
 
         ttk.Button(
             self, text='Save Protection Settings', command=self.save
-        ).grid(row=base + 1, column=1, padx=8)
+        ).grid(row=0, column=1, padx=8)
 
         # Static note explaining the current limitations to the user.
         self._note_label = ttk.Label(
@@ -77,11 +86,11 @@ class ProtectionView(ttk.LabelFrame):
                  'Only the primary display is covered. Application-aware protection is not implemented.',
             wraplength=650,
         )
-        self._note_label.grid(row=base + 2, column=0, columnspan=2, sticky='w')
+        self._note_label.grid(row=base+2, column=0, columnspan=2, sticky='w')
 
         # Status line: shows "saved" or "not saved: <reason>".
         self._feedback_label = ttk.Label(self, textvariable=self.feedback, wraplength=650)
-        self._feedback_label.grid(row=base + 3, column=0, columnspan=2, sticky='w')
+        self._feedback_label.grid(row=base+3, column=0, columnspan=2, sticky='w')
 
         # Re-wrap the two long labels whenever the panel changes width.
         self.bind('<Configure>', self._on_resize)
@@ -95,7 +104,7 @@ class ProtectionView(ttk.LabelFrame):
         self._note_label.configure(wraplength=wrap)
         self._feedback_label.configure(wraplength=wrap)
 
-    def reload(self):
+    def reload(self): 
         """Load saved settings into the widgets, discarding unsaved edits.
 
         Errors are shown in the feedback line rather than raised, so a missing
