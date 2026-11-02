@@ -393,10 +393,14 @@ class MainWindow:
                 protection_window = window.winfo_id()
 
             active = self._foreground_detector.detect(protection_window)
+            if(self.web_opener.driver is not None and self.web_opener.browser_pid is None): #check if decoy open but process id isnt updated
+                self.web_opener.getPID()
+            is_decoy_website = active.process_id is not None and active.process_id == self.web_opener.browser_pid #check if foreground window is the decoy window
 
-            if not active.protection_surface:
+            
+            if not active.protection_surface and not is_decoy_website:
                 self._last_external_application = active
-            elif not (
+            elif active.protection_surface and not (
                 window is not None and self.controller.state.protection_active
             ):
                 # Our ordinary dashboard is not a protected external application.

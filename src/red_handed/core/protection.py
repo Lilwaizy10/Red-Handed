@@ -77,19 +77,6 @@ class ProtectionManager:
                 self.web_opener.close()
             except Exception:
                 pass
-            '''
-            #scenario where can close privacy overlay/screen blackout 
-            #screen but cannot open decoy website (rollback option)
-            if( 
-                self._presentation is not None 
-                and self._presentation[0] is not ProtectionMode.DECOY_WEBSITE 
-                and desired is not None
-                and desired[0] is ProtectionMode.DECOY_WEBSITE
-            ):
-            '''
-                
-                #previous = self._presentation
-                #self.surface.show(previous[0], test=previous[1], source=previous[2])
         else:
             self._presentation = desired
             self.state.protection_active = desired is not None

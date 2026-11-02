@@ -54,6 +54,7 @@ class ActiveApplication:
     executable_path: str | None = None
     error: str | None = None
     protection_surface: bool = False
+    process_id: int | None = None
 
     @property
     def executable_name(self):

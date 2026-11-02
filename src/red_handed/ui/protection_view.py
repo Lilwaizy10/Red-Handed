@@ -38,7 +38,6 @@ class ProtectionView(ttk.LabelFrame):
         self.mode = tk.StringVar(master=self)      # selected radio button value
         self.hotkey = tk.StringVar(master=self)    # text typed in the hotkey box
         self.feedback = tk.StringVar(master=self)  # success / error message line
-        #self.url = tk.StringVar(master=self) #url typed in the url box
 
         # Layout 
         # Let column 0 stretch when the window is resized so text can reflow.
@@ -66,19 +65,6 @@ class ProtectionView(ttk.LabelFrame):
         # modes), so adding a new ProtectionMode never causes widgets to
         # overlap. Previously these row numbers were hard-coded.
         base = len(modes)
-
-        #create URL text & textbar widgets 
-        #self.url_label = ttk.Label(self, text='Enter website URL (e.g https://www.google.com): ')
-        #self.url_entry = ttk.Entry(self, textvariable=self.url, width=28)
-
-        #put these widgets on a grid and remember its position
-        #self.url_label.grid(row=base, column=0, sticky='w')  
-        #self.url_entry.grid(row=base+1, column=0, sticky='w')
-
-        #Hide these widgets cause we dw to display it(UI becomes too cluttered), only shows when you choose the website option
-        #self.url_label.grid_remove()
-        #self.url_entry.grid_remove()
-
 
         #Hotkey
         ttk.Label(
@@ -131,9 +117,7 @@ class ProtectionView(ttk.LabelFrame):
             return
 
         self.mode.set(settings.mode.value)
-        #self.update_url_widgets() #restores widgets if PPS is closed at OPEN_PREFERRED_WEBSITE option chosen
         self.hotkey.set(settings.hotkey)
-        #self.url.set(settings.url)
         self.feedback.set('')  # clear any old message
 
     def save(self):
@@ -146,7 +130,6 @@ class ProtectionView(ttk.LabelFrame):
 
         # strip() removes accidental leading/trailing spaces from the hotkey.
         hotkey = self.hotkey.get().strip()
-        #url = self.url.get().strip()
 
         try:
             # ProtectionMode(...) turns the radio value back into an enum member
@@ -159,12 +142,3 @@ class ProtectionView(ttk.LabelFrame):
             # Runs only if no exception was raised above.
             self.hotkey.set(hotkey)  # show the cleaned-up value back to the user
             self.feedback.set('Protection mode and hotkey saved.')
-    '''
-    def update_url_widgets(self):
-        if(self.mode.get() == ProtectionMode.OPEN_PREFERRED_WEBSITE.value):
-            self.url_label.grid()
-            self.url_entry.grid()
-        else:
-            self.url_label.grid_remove()
-            self.url_entry.grid_remove()
-    '''

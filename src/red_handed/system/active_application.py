@@ -153,6 +153,7 @@ class ActiveApplicationDetector:
             if self._is_protection_surface(hwnd, protection_window):
                 return ActiveApplication(protection_surface=True)
 
+            pid = self.backend.process_id_for_window(hwnd)
             path = self.backend.executable_for_window(hwnd)
 
             # The user may have switched windows while we were querying. In that case
@@ -162,7 +163,7 @@ class ActiveApplicationDetector:
                 return ActiveApplication(error='Foreground changed during detection.')
             if not path:
                 return ActiveApplication(error='Foreground executable unavailable.')
-            return ActiveApplication(executable_path=path)
+            return ActiveApplication(executable_path=path, process_id=pid)
         except OSError as exc:
             # Expected failures: inaccessible, elevated, or already-exited processes.
             # Keep the user-facing message generic and log the specifics.

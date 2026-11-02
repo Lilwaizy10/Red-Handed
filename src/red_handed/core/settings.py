@@ -18,7 +18,6 @@ class ProtectionSettings:
 
     mode: ProtectionMode = ProtectionMode.PRIVACY_OVERLAY
     hotkey: str = "Ctrl+Alt+P"
-    #url: str = "https://www.google.com"
 
     def __post_init__(self):
         if not isinstance(self.mode, ProtectionMode):
@@ -28,12 +27,9 @@ class ProtectionSettings:
         # settings store does not catch) instead of ValueError.
         if not isinstance(self.hotkey, str):
             raise ValueError("Hotkey must be text.")
-        '''
-        if not isinstance(self.url, str):
-            raise ValueError("URL must be text.")
         # Store the normalised form so equivalent spellings compare equal.
         object.__setattr__(self, 'hotkey', parse_hotkey(self.hotkey).text)
-        '''
+        
 
 
 class Sensitivity(str, Enum):
