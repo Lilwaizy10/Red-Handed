@@ -393,12 +393,14 @@ class MainWindow:
                 protection_window = window.winfo_id()
 
             active = self._foreground_detector.detect(protection_window)
-            if(self.web_opener.driver is not None and self.web_opener.browser_pid is None): #check if decoy open but process id isnt updated
-                self.web_opener.getPID()
-            is_decoy_website = active.process_id is not None and active.process_id == self.web_opener.browser_pid #check if foreground window is the decoy window
-
-            
-            if not active.protection_surface and not is_decoy_website:
+            is_decoy_website = (
+                active.process_id is not None
+                and active.process_id == self.web_opener.browser_pid
+            )
+            # Chrome can take focus before its constructor returns its PID.
+            # Retain the preceding app during that brief startup interval.
+            decoy_starting = self.web_opener.starting
+            if not active.protection_surface and not is_decoy_website and not decoy_starting:
                 self._last_external_application = active
             elif active.protection_surface and not (
                 window is not None and self.controller.state.protection_active
@@ -650,8 +652,9 @@ class MainWindow:
             )
         elif state.protection_active:
             self.protection_text.set(
-                f"Protection: {state.selected_protection_mode.value} "
+                f"Protection: {self.protection.active_mode.value} "
                 f"({self.protection.source})"
+                + (f" — {self.protection.notice}" if self.protection.notice else "")
             )
         else:
             self.protection_text.set("Protection: Inactive")
