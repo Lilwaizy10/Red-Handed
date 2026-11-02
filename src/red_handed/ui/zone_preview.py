@@ -15,7 +15,7 @@ class ZonePreview(tk.Canvas):
       by copying draft_zone into saved_zone, or to throw it away with
       discard_draft().
     * The *saved* zone (solid blue) is whatever the parent last stored in
-      `saved_zone`.
+      `saved_zone`. It remains visible when editing is off; drawing is disabled.
 
     Coordinate convention
     ---------------------
@@ -39,7 +39,7 @@ class ZonePreview(tk.Canvas):
                                                     # referenced or Tk garbage-collects it
         self._start: tuple[float, float] | None = None  # where the drag began (normalised)
         self._on_draft = on_draft                   # callback fired when a drag finishes
-        self._message = "Camera preview is inactive. Please select a camera to see the preview."
+        self._message = "Camera preview is inactive. Click Start Monitoring to see the preview."
 
         # event bindings 
         # Redraw whenever the canvas is resized so the image stays centred.
@@ -161,10 +161,6 @@ class ZonePreview(tk.Canvas):
         # Images are placed by their centre by default, so this centres it.
         self.create_image(cx, cy, image=self._photo)
 
-        # Zones are only visible while editing.
-        if not self.editing:
-            return
-
         width, height = self._photo.width(), self._photo.height()
         # Top-left corner of the image on the canvas; zone pixel positions
         # are relative to the image, so we add this offset to each one.
@@ -173,8 +169,9 @@ class ZonePreview(tk.Canvas):
         # (zone, outline colour, dash pattern, label text)
         # Saved = solid blue, Draft = dashed yellow, so they are easy to tell apart.
         for zone, color, dash, label in [
-            (self.saved_zone, "#60a5fa", (), "Saved zone"),
-            (self.draft_zone, "#fbbf24", (5, 3), "Unsaved zone"),
+            (self.saved_zone, "#60a5fa", (), "Saved zone - in use"),
+            (self.draft_zone if self.editing else None, "#fbbf24", (5, 3),
+             "Unsaved replacement - click Save Zone"),
         ]:
             if zone is None:
                 continue
@@ -182,6 +179,9 @@ class ZonePreview(tk.Canvas):
             x1, y1, x2, y2 = zone.to_pixels(width, height)
             self.create_rectangle(left + x1, top + y1, left + x2, top + y2,
                                   outline=color, dash=dash, width=2, tags="zone")
-            # Small label tucked inside the rectangle's top-left corner.
-            self.create_text(left + x1 + 4, top + y1 + 4, text=label,
-                             anchor="nw", fill=color, tags="zone")
+            # Keep labels within the image, including zones near its right edge.
+            label_width = min(240, max(1, width - 8))
+            label_x = min(x1 + 4, max(4, width - label_width - 4))
+            self.create_text(left + label_x, top + y1 + 4, text=label,
+                             anchor="nw", fill=color, tags="zone",
+                             width=label_width)

@@ -12,6 +12,7 @@ from pathlib import Path
 import sys
 import tempfile
 import tkinter as tk
+from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
@@ -131,8 +132,9 @@ class ZoneSettingsUITests(unittest.TestCase):
         before = self.path.read_bytes()
 
         self.prepare_draft()
-        self.window.preview.discard_draft()
+        self.window.discard_zone_draft()
         self.assertIsNone(self.window.preview.draft_zone)
+        self.assertEqual(self.window.preview.saved_zone, self.original.privacy_zone)
 
         self.prepare_draft()
         self.window.show_home()
@@ -140,6 +142,40 @@ class ZoneSettingsUITests(unittest.TestCase):
 
         self.assertEqual(self.path.read_bytes(), before)
         self.assertEqual(self.window.controller.settings, self.original)
+
+    def test_home_keeps_saved_outline_visible_and_read_only(self) -> None:
+        before = self.path.read_bytes()
+        self.prepare_draft()
+        preview = self.window.preview
+        photo = tk.PhotoImage(master=self.window.root, width=640, height=360)
+        preview.show_image(photo)
+        def outlines():
+            return [
+                item for item in preview.find_withtag("zone")
+                if preview.type(item) == "rectangle"
+            ]
+
+        self.assertEqual(len(outlines()), 2)
+
+        self.window.show_home()
+
+        self.assertFalse(preview.editing)
+        self.assertEqual(len(outlines()), 1)
+        self.assertEqual(preview.itemcget(outlines()[0], "outline"), "#60a5fa")
+        self.assertEqual(preview.saved_zone, self.original.privacy_zone)
+
+        # A drag on Home must not create a replacement or alter saved settings.
+        cx, cy = preview.winfo_width() / 2, preview.winfo_height() / 2
+        preview._press(SimpleNamespace(x=cx - 50, y=cy - 50))
+        preview._drag(SimpleNamespace(x=cx + 50, y=cy + 50))
+        preview._release(SimpleNamespace(x=cx + 50, y=cy + 50))
+        self.assertIsNone(preview.draft_zone)
+        self.assertEqual(len(outlines()), 1)
+        self.assertEqual(self.path.read_bytes(), before)
+
+        self.window.show_calibration()
+        self.assertTrue(preview.editing)
+        self.assertEqual(len(outlines()), 1)
 
     def test_save_without_draft_does_not_write(self) -> None:
         before = self.path.read_bytes()

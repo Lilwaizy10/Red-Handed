@@ -172,7 +172,7 @@ class MainWindow:
             anchor="w", pady=(0, 20)
         )
         ttk.Button(sidebar, text="Home", command=self.show_home).pack(fill=tk.X, pady=3)
-        ttk.Button(sidebar, text="Status / Calibration", command=self.show_calibration).pack(
+        ttk.Button(sidebar, text="Privacy Zone Setup", command=self.show_calibration).pack(
             fill=tk.X, pady=3
         )
         ttk.Button(sidebar, text="Detection & Timing", command=self.show_settings).pack(
@@ -204,8 +204,10 @@ class MainWindow:
         )
         ttk.Label(
             content,
-            text="Camera monitoring and face-based person counting",
+            text="Protect your screen from shoulder surfers.\n"
+                 "Automatically cover your screen when an additional person is detected in your saved privacy zone.",
             foreground="#4b5563",
+            wraplength=650,
         ).grid(row=1, column=0, sticky="w", pady=(0, 14))
 
         status_row = ttk.Frame(content)
@@ -255,7 +257,9 @@ class MainWindow:
 
         self.preview = ZonePreview(
             preview_group,
-            lambda: self.message_text.set("Unsaved zone. Select Save Zone to apply."),
+            lambda: self.message_text.set(
+                "Unsaved zone. Click Save Zone to use it; any saved zone stays in use until then."
+            ),
         )
         self.preview.saved_zone = self.controller.settings.privacy_zone
         self.preview.grid(row=0, column=0, sticky="nsew")
@@ -276,7 +280,7 @@ class MainWindow:
 
         # Calibration and settings panels share row 8; only one is visible at a time.
         self.calibration = CalibrationView(
-            content, self.people_text, self.save_zone, self.preview.discard_draft
+            content, self.people_text, self.save_zone, self.discard_zone_draft
         )
         self.calibration.grid(row=8, column=0, sticky="ew", pady=(8, 0))
         self.calibration.grid_remove()
@@ -331,6 +335,8 @@ class MainWindow:
         """Show the dashboard without changing camera ownership or monitoring."""
         self.calibration.grid_remove()
         self.settings_view.grid_remove()
+        if self.preview.draft_zone is not None:
+            self.discard_zone_draft()
         self.preview.set_editing(False)
         self.protection_view.grid_remove()
         self.application_view.grid_remove()
@@ -458,6 +464,13 @@ class MainWindow:
         self.controller.apply_settings(settings)
         self.settings_notice.set("")
         self._refresh_detection()
+
+    def discard_zone_draft(self) -> None:
+        self.preview.discard_draft()
+        if self.preview.saved_zone is not None:
+            self.message_text.set("Unsaved drawing discarded. Your saved zone stays in use for monitoring.")
+        else:
+            self.message_text.set("Unsaved drawing discarded. Open Privacy Zone Setup to draw and save a zone.")
 
     def save_zone(self) -> None:
         zone = self.preview.draft_zone

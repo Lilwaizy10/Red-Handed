@@ -83,7 +83,7 @@ class ProtectionView(ttk.LabelFrame):
         self._note_label = ttk.Label(
             self,
             text='The shortcut toggles the manual request only. Automatic protection may remain.\n'
-                 'Only the primary display is covered. Application-aware protection is not implemented.',
+                 'Only the primary display is covered. Use Protected Applications to limit when automatic protection runs.',
             wraplength=650,
         )
         self._note_label.grid(row=base+2, column=0, columnspan=2, sticky='w')
