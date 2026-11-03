@@ -321,6 +321,138 @@ class TutorialJourneyTests(unittest.TestCase):
         self.browser.shutdown.assert_called_once_with()
         self.assertFalse(self.root.tk.call("info", "commands", str(self.root)))
 
+    def test_optional_timing_validates_saves_and_preserves_zone_and_sensitivity(self):
+        saved = MonitoringSettings(privacy_zone=PrivacyZone(0.1, 0.1, 0.4, 0.5))
+        self.store.save(saved)
+        self.create_window()
+        self.window.customise_menu.invoke(0)
+        self.window.timing_button.invoke()
+        view = self.window.settings_view
+        self.assert_step("Wait before covering")
+        self.assertTrue(view.sensitivity_control.instate(["disabled"]))
+        view.activation.set("invalid")
+        self.window.tutorial_view.next_button.invoke()
+        view.recovery.set("2.5")
+        self.window.tutorial_view.next_button.invoke()
+        before = self.store.path.read_bytes()
+        view.save_button.invoke()
+        self.assert_step("Save timing")
+        self.assertEqual(self.store.path.read_bytes(), before)
+        view.activation.set("1.25")
+        with patch.object(self.store, "save", side_effect=OSError("Disk full")):
+            view.save_button.invoke()
+        self.assert_step("Save timing")
+        view.save_button.invoke()
+        self.assert_step("Timing saved")
+        actual = self.store.load()
+        self.assertEqual((actual.activation_delay, actual.recovery_delay), (1.25, 2.5))
+        self.assertEqual(actual.privacy_zone, saved.privacy_zone)
+        self.assertEqual(actual.sensitivity, saved.sensitivity)
+        self.window.tutorial_view.next_button.invoke()
+        self.assertFalse(self.window.customisation.active)
+        self.camera.open.assert_not_called()
+
+    def test_optional_application_guide_handles_empty_list_picker_cancel_and_save_failure(self):
+        self.create_window()
+        self.window.customise_menu.invoke(2)
+        self.window.applications_button.invoke()
+        view = self.window.application_view
+        view.enable_button.invoke()
+        self.window.tutorial_view.next_button.invoke()
+        self.assert_step("Choose applications")
+        view.save_button.invoke()  # Core permits this, but the guide must explain the blocking empty list.
+        self.assert_step("Choose applications")
+        self.assertIn("empty list blocks", self.window.tutorial_view.instruction.cget("text"))
+        with patch("red_handed.ui.application_view.filedialog.askopenfilename", return_value=""):
+            view.add_button.invoke()
+        self.assert_step("Choose applications")
+        self.assertEqual(view.applications, [])
+        executable = self.store.path.parent / "Editor.exe"
+        executable.write_bytes(b"Test fixture; never executed")
+        with patch("red_handed.ui.application_view.filedialog.askopenfilename", return_value=str(executable)):
+            view.add_button.invoke()
+        self.assert_step("Save application settings")
+        with patch.object(self.store, "save", side_effect=OSError("Disk full")):
+            view.save_button.invoke()
+        self.assert_step("Save application settings")
+        self.assertEqual(len(view.applications), 1)
+        view.save_button.invoke()
+        self.assert_step("Application settings saved")
+        self.assertTrue(self.window.application_settings.application_aware_enabled)
+        self.assertEqual(len(self.window.application_settings.protected_applications), 1)
+        self.window.tutorial_view.next_button.invoke()
+        self.assertFalse(self.window.customisation.active)
+
+    def test_optional_shortcut_uses_real_registration_and_requires_dispatch_for_verification(self):
+        self.create_window()
+        self.window.customise_menu.invoke(1)
+        self.window.protection_mode_button.invoke()
+        view = self.window.protection_view
+        view.hotkey.set("Ctrl+Alt+O")
+        self.backend.register.return_value = False
+        view.save_button.invoke()
+        self.assert_step("Set your emergency shortcut")
+        self.assertEqual(self.window.hotkeys.current.text, "Ctrl+Alt+P")
+        self.backend.register.return_value = True
+        view.save_button.invoke()
+        self.assert_step("Try your shortcut")
+        self.window.home_button.invoke()
+        self.window.home_test_button.invoke()
+        self.fire_timer(self.window._test_job)
+        self.assert_step("Try your shortcut")  # A timeout alone is not verification.
+        self.window.home_test_button.invoke()
+        identifier = self.backend.register.call_args.args[0]
+        self.backend.drain.return_value = [(identifier, perf_counter())]
+        self.fire_timer(self.window._hotkey_job)
+        self.backend.drain.return_value = []
+        self.assert_step("Shortcut guide complete")
+        self.assertIn("Verified", self.window.tutorial_view.instruction.cget("text"))
+        self.assertFalse(self.window.controller.state.manual_protection_requested)
+        self.assertIsNone(self.window._test_job)
+        self.window.tutorial_view.next_button.invoke()
+        self.assertFalse(self.window.customisation.active)
+
+    def test_optional_skip_and_replay_preserve_unsaved_inputs_and_protection(self):
+        self.create_window()
+        self.window.customise_menu.invoke(0)
+        self.window.timing_button.invoke()
+        self.window.settings_view.activation.set("1.5")
+        self.window.home_button.invoke()
+        self.assertEqual(self.window._current_view, "settings")
+        self.window.emergency_button.invoke()
+        self.window.tutorial_view.skip_button.invoke()
+        self.assertEqual(self.window.settings_view.activation.get(), "1.5")
+        self.assertTrue(self.window.controller.state.manual_protection_requested)
+        self.assertFalse(self.store.path.exists())
+        self.window.replay_tutorial_button.invoke()
+        self.assertTrue(self.window.tutorial.active)
+        self.assertFalse(self.window.customisation.active)
+        self.assertEqual(self.window.settings_view.activation.get(), "1.5")
+        self.assertTrue(self.window.controller.state.protection_active)
+
+    def test_optional_guides_fit_minimum_window_and_close_releases_highlight_callbacks(self):
+        self.create_window()
+        self.root.geometry("940x800")
+        for menu, open_panel, controls in (
+            (0, self.window.timing_button, (self.window.settings_view.save_button, self.window.settings_view.discard_button)),
+            (1, self.window.protection_mode_button, (self.window.protection_view.hotkey_entry, self.window.protection_view.save_button)),
+            (2, self.window.applications_button, (self.window.application_view.add_button, self.window.application_view.save_button)),
+        ):
+            self.window.customise_menu.invoke(menu)
+            open_panel.invoke()
+            self.root.update()
+            for widget in (*controls, self.window.tutorial_view.skip_button):
+                self.assertTrue(widget.winfo_ismapped())
+                self.assertLessEqual(widget.winfo_rootx() - self.root.winfo_rootx() + widget.winfo_width(), self.root.winfo_width())
+                self.assertLessEqual(widget.winfo_rooty() - self.root.winfo_rooty() + widget.winfo_height(), self.root.winfo_height())
+            self.window.tutorial_view.skip_button.invoke()
+        self.window.start_customisation("applications")
+        pending = set(self.root.tk.splitlist(self.root.tk.call("after", "info")))
+        self.window.close()
+        self.assertFalse(self.window.customisation.active)
+        self.assertIsNone(self.window.tutorial_highlighter._job)
+        self.assertFalse(pending.intersection(self.root.tk.splitlist(self.root.tk.call("after", "info"))))
+
 
 if __name__ == "__main__":
     unittest.main()

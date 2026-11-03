@@ -2,11 +2,11 @@
 
 What this module does
 ---------------------
-SettingsView is a Tkinter panel (a ttk.LabelFrame) that lets the user edit:
-  * Sensitivity       - Low / Medium / High (picked from a read-only dropdown)
+SettingsView is a Tkinter panel (a ttk.LabelFrame) that shows:
+  * Stored sensitivity - unavailable until its behavioural effect is defined
   * Activation delay  - seconds, 0-10
   * Recovery delay    - seconds, 0-10
-and save them to the application's settings store.
+The two editable delays are saved to the application's settings store.
 """
 
 from dataclasses import replace
@@ -34,12 +34,15 @@ def _parse_delay(label: str, raw: str) -> float:
 
 
 class SettingsView(ttk.LabelFrame):
-    def __init__(self, parent, get_settings, save_settings) -> None:
+    def __init__(self, parent, get_settings, save_settings, *, on_change=None, on_saved=None) -> None:
         super().__init__(parent, text="Detection & Timing", padding=8)
 
         # Keep the injected callables. The leading underscore marks them as
         # internal; every other method must use these exact names.
         self._get_settings, self._save_settings = get_settings, save_settings
+        self._on_change = on_change or (lambda: None)
+        self._on_saved = on_saved or (lambda: None)
+        self.save_error = None
 
         # Tk variables are two-way bound to the widgets below: what the user
         # types/selects updates the variable, and .set() updates the widget.
@@ -51,25 +54,28 @@ class SettingsView(ttk.LabelFrame):
         self.feedback = tk.StringVar(master=self)    # message shown under the form
 
         # Row 0: column headings. enumerate gives the grid column for each title.
-        for column, title in enumerate(["Sensitivity", "Activation delay (0-10s)", "Recovery delay (0-10s)"]):
+        for column, title in enumerate(["Sensitivity (unavailable)", "Cover delay (0-10s)", "Restore delay (0-10s)"]):
             ttk.Label(self, text=title).grid(row=0, column=column, sticky="w", padx=4)
 
-        # Row 1: the three inputs.
-        # state="readonly" means the user can only pick from the list, so an
-        # invalid sensitivity can't be typed in.
-        ttk.Combobox(self, textvariable=self.sensitivity, values=[s.value for s in Sensitivity],
-                     state="readonly", width=12).grid(row=1, column=0, padx=4)
-        ttk.Entry(self, textvariable=self.activation, width=18).grid(row=1, column=1, padx=4)
-        ttk.Entry(self, textvariable=self.recovery, width=18).grid(row=1, column=2, padx=4)
+        # Row 1: the stored sensitivity and the two editable delay inputs.
+        self.sensitivity_control = ttk.Combobox(self, textvariable=self.sensitivity, values=[s.value for s in Sensitivity],
+                                                state="disabled", width=12)
+        self.sensitivity_control.grid(row=1, column=0, padx=4)
+        self.activation_entry = ttk.Entry(self, textvariable=self.activation, width=18)
+        self.activation_entry.grid(row=1, column=1, padx=4)
+        self.recovery_entry = ttk.Entry(self, textvariable=self.recovery, width=18)
+        self.recovery_entry.grid(row=1, column=2, padx=4)
 
         # Row 2: Save button. Kept as an attribute so other code (or tests)
         # can enable/disable it or invoke it.
         self.save_button = ttk.Button(self, text="Save Settings", command=self.save)
         self.save_button.grid(row=2, column=0, sticky="w", pady=6)
+        self.discard_button = ttk.Button(self, text="Discard changes", command=self.reload)
+        self.discard_button.grid(row=2, column=1, sticky="w", pady=6)
 
         # Row 3: static note. Sensitivity is stored, but nothing uses it yet,
         # so we tell the user honestly rather than imply it changes behaviour.
-        ttk.Label(self, text="Sensitivity is saved; its effect awaits the team's definition.").grid(
+        ttk.Label(self, text="Sensitivity is unavailable; the stored value currently has no effect.").grid(
             row=3, column=0, columnspan=3, sticky="w")
 
         # Row 4: dynamic feedback (errors or the success message).
@@ -80,6 +86,13 @@ class SettingsView(ttk.LabelFrame):
         # Fill the widgets with the currently stored values. This must come
         # after the variables and widgets exist.
         self.reload()
+        self.activation.trace_add("write", lambda *_: self._on_change())
+        self.recovery.trace_add("write", lambda *_: self._on_change())
+
+    @property
+    def has_unsaved_changes(self):
+        saved = self._get_settings()
+        return self.activation.get().strip() != str(saved.activation_delay) or self.recovery.get().strip() != str(saved.recovery_delay)
 
     def reload(self) -> None:
         """Refresh all inputs from the settings store and clear any message.
@@ -92,6 +105,8 @@ class SettingsView(ttk.LabelFrame):
         self.activation.set(str(settings.activation_delay))
         self.recovery.set(str(settings.recovery_delay))
         self.feedback.set("")
+        self.save_error = None
+        self._on_change()
 
     def save(self) -> None:
         """Validate the form and, if valid, persist it. Runs on Save click.
@@ -122,9 +137,12 @@ class SettingsView(ttk.LabelFrame):
             # NOTE: if the store can raise other exception types, add them here;
             # otherwise Tk will just print a traceback and the user sees nothing.
             self.feedback.set(f"Not saved: {error}")
+            self.save_error = str(error)
+            self._on_change()
             return
 
         # Success path. Reload first so the boxes show the stored values, then
         # set the message. Order matters: reload() clears the feedback text.
         self.reload()
         self.feedback.set("Settings saved. Risk timing restarts with the next detection.")
+        self._on_saved()

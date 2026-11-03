@@ -84,6 +84,7 @@ SETUP_STEPS = (
         None,
         next_enabled=True,
         next_label="Finish",
+        alternate_label="Customise more",
     ),
 )
 

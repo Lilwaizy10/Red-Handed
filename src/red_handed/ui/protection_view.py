@@ -68,9 +68,8 @@ class ProtectionView(ttk.LabelFrame):
             self, text='Emergency hotkey (Ctrl/Alt/Shift + A-Z, 0-9, F1-F11):'
         ).grid(row=base, column=0, sticky='w')
 
-        ttk.Entry(self, textvariable=self.hotkey, width=28).grid(
-            row=base+1, column=0, sticky='w'
-        )
+        self.hotkey_entry = ttk.Entry(self, textvariable=self.hotkey, width=28)
+        self.hotkey_entry.grid(row=base+1, column=0, sticky='w')
 
         self.save_button = ttk.Button(
             self, text='Save Protection Settings', command=self.save
