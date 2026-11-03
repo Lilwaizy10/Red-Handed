@@ -30,7 +30,7 @@ from red_handed.storage.event_store import EventStore
 from red_handed.system.active_application import ActiveApplicationDetector
 from red_handed.ui.event_history_view import EventHistoryView
 from red_handed.ui.static_web_opener import StaticWebOpener
-from red_handed.ui.tutorial_controller import TutorialController, TutorialStep
+from red_handed.ui.tutorial_controller import TutorialContext, TutorialController, TutorialStep
 from red_handed.ui.tutorial_view import ControlHighlighter, TutorialView
 
 
@@ -68,6 +68,7 @@ class MainWindow:
         self._frame_job: str | None = None
         self._camera_check_job: str | None = None
         self._preview_photo: ImageTk.PhotoImage | None = None
+        self._preview_error = False
 
         # Load once at startup so saved zone/sensitivity/delays reach the controller.
         # The store supplies defaults and sets last_error if the file is unreadable
@@ -232,6 +233,7 @@ class MainWindow:
             back=lambda: self.tutorial.back(),
             next_step=lambda: self.tutorial.next(),
             skip=lambda: self.tutorial.skip(),
+            redraw=lambda: self.tutorial.redraw(),
         )
         self.tutorial_view.grid(row=0, column=0, sticky="ew")
         self.tutorial_view.grid_remove()
@@ -283,9 +285,7 @@ class MainWindow:
 
         self.preview = ZonePreview(
             preview_group,
-            lambda: self.message_text.set(
-                "Unsaved zone. Click Save Zone to use it; any saved zone stays in use until then."
-            ),
+            self._zone_draft_changed,
         )
         self.preview.saved_zone = self.controller.settings.privacy_zone
         self.preview.grid(row=0, column=0, sticky="nsew")
@@ -359,7 +359,33 @@ class MainWindow:
 
     def start_tutorial(self) -> None:
         if not self._closed:
-            self.tutorial.start()
+            self.tutorial.start(self._tutorial_context())
+
+    def _tutorial_context(self) -> TutorialContext:
+        state = self.controller.state
+        return TutorialContext(
+            camera_available=state.camera_status is CameraStatus.AVAILABLE,
+            monitoring=state.monitoring_status is MonitoringStatus.ACTIVE,
+            preview_ready=self.preview.has_image,
+            zone_open=self._current_view == "calibration",
+            saved_zone=self.controller.settings.privacy_zone is not None,
+            draft_ready=self.preview.draft_ready,
+            preview_error=self._preview_error,
+        )
+
+    def _sync_tutorial(self) -> None:
+        tutorial = getattr(self, "tutorial", None)
+        if tutorial is not None and tutorial.active:
+            tutorial.update(self._tutorial_context())
+
+    def _zone_draft_changed(self) -> None:
+        if self.preview.draft_zone is not None:
+            self.message_text.set(
+                "Unsaved zone. Click Save Zone to use it; any saved zone stays in use until then."
+            )
+        else:
+            self.message_text.set("No zone drawn. Click and drag inside the camera image.")
+        self._sync_tutorial()
 
     def _show_tutorial_step(self, step: TutorialStep, index: int, total: int) -> None:
         self.title_label.grid_remove()
@@ -369,7 +395,11 @@ class MainWindow:
         self.tutorial_view.grid()
         targets = {
             "start_monitoring": self.start_button,
+            "retry_camera": self.retry_button,
+            "stop_monitoring": self.stop_button,
             "privacy_zone": self.zone_setup_button,
+            "preview": self.preview,
+            "save_zone": self.calibration.save_button,
             "protection_mode": self.protection_mode_button,
         }
         self.tutorial_highlighter.show(targets[step.target])
@@ -387,9 +417,14 @@ class MainWindow:
             self.guide_button.grid()
         else:
             self.guide_button.grid_remove()
+        self._sync_tutorial()
 
-    def show_home(self) -> None:
+    def show_home(self) -> bool:
         """Show the dashboard without changing camera ownership or monitoring."""
+        if self.tutorial.active and self.preview.draft_zone is not None:
+            self.message_text.set("Save Zone or Discard Draft before leaving Privacy Zone Setup. "
+                                  "Your unsaved drawing has been kept.")
+            return False
         self.calibration.grid_remove()
         self.settings_view.grid_remove()
         if self.preview.draft_zone is not None:
@@ -399,12 +434,14 @@ class MainWindow:
         self.application_view.grid_remove()
         self.history_view.grid_remove()
         self._set_current_view("home")
+        return True
 
     def show_calibration(self) -> None:
         """FR12.3 / FR12.4: share the running preview and current count."""
         self.calibration.grid()
         self.settings_view.grid_remove()
-        self.preview.set_editing(True)
+        if not self.preview.editing:
+            self.preview.set_editing(True)
         self.protection_view.grid_remove()
         self.application_view.grid_remove()
         self.history_view.grid_remove()
@@ -412,14 +449,16 @@ class MainWindow:
 
     def show_protection(self) -> None:
         """Open protection settings and discard stale edits in that panel."""
-        self.show_home()
+        if not self.show_home():
+            return
         self.protection_view.reload()
         self.protection_view.grid()
         self._set_current_view("protection")
 
     def show_applications(self) -> None:
         """Open protected-application settings and discard stale edits."""
-        self.show_home()
+        if not self.show_home():
+            return
         self.application_view.reload()
         self.application_view.grid()
         self._set_current_view("applications")
@@ -440,7 +479,8 @@ class MainWindow:
         self._refresh_protection()
     def show_history(self):
         """Open the history panel and take a fresh recorder snapshot."""
-        self.show_home()
+        if not self.show_home():
+            return
         self.history_view.refresh(force=True)
         self.history_view.grid()
         self._set_current_view("history")
@@ -503,7 +543,8 @@ class MainWindow:
             )
 
     def show_settings(self) -> None:
-        self.show_home()
+        if not self.show_home():
+            return
         # Discard stale typed text from an earlier visit to this panel.
         self.settings_view.reload()
         self.settings_view.grid()
@@ -534,6 +575,7 @@ class MainWindow:
             self.message_text.set("Unsaved drawing discarded. Your saved zone stays in use for monitoring.")
         else:
             self.message_text.set("Unsaved drawing discarded. Open Privacy Zone Setup to draw and save a zone.")
+        self._sync_tutorial()
 
     def save_zone(self) -> None:
         zone = self.preview.draft_zone
@@ -546,11 +588,15 @@ class MainWindow:
         except (ValueError, OSError) as error:
             # Keep the previous active zone and the unsaved draft so the user can retry.
             self.message_text.set(f"Zone not saved: {error}")
+            if getattr(self, "tutorial", None) is not None:
+                self.tutorial.save_failed()
             return
         # Zone-specific updates belong here, after a successful save only.
         self.preview.saved_zone = zone
         self.preview.discard_draft()
         self.message_text.set("Privacy zone saved. Risk timing restarts with the next detection.")
+        if getattr(self, "tutorial", None) is not None:
+            self.tutorial.zone_saved(self._tutorial_context())
 
     @staticmethod
     def _status_card(
@@ -576,6 +622,7 @@ class MainWindow:
         self.camera_text.set(state.camera_status.value)
         self._refresh_detection()
         self._refresh_controls()
+        self._sync_tutorial()
 
     def _refresh_detection(self) -> None:
         count, status = detection_labels(self.controller.state)
@@ -627,10 +674,12 @@ class MainWindow:
             self.preview.clear("Camera unavailable")
 
         self._preview_photo = None
+        self._preview_error = False
         self._refresh_status()
 
     def start_monitoring(self) -> None:
         """FR1.1 / FR1.2 - Start frame retrieval after camera verification."""
+        self._preview_error = False
         if not self.controller.start_monitoring():
             self.message_text.set(
                 self.controller.state.camera_error
@@ -673,9 +722,14 @@ class MainWindow:
             image.thumbnail(size, Image.Resampling.LANCZOS)
             self._preview_photo = ImageTk.PhotoImage(image=image)
             self.preview.show_image(self._preview_photo)
+            self._preview_error = False
         except Exception as exc:
+            self._preview_photo = None
+            self._preview_error = True
+            self.preview.clear("Camera preview unavailable")
             self.message_text.set(f"The camera frame could not be displayed: {exc}")
 
+        self._sync_tutorial()
         self._schedule_next_frame()
 
     def stop_monitoring(self) -> None:
@@ -685,6 +739,7 @@ class MainWindow:
             self._frame_job = None
         self.controller.stop_monitoring()
         self._preview_photo = None
+        self._preview_error = False
         self.preview.clear("Camera preview is inactive")
         self.message_text.set("Monitoring is inactive. Camera access has been released.")
         self._refresh_status()

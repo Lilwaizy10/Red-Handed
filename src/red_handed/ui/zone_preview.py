@@ -58,6 +58,14 @@ class ZonePreview(tk.Canvas):
         self._photo = photo  # store the reference, otherwise the image disappears
         self._draw()
 
+    @property
+    def has_image(self) -> bool:
+        return self._photo is not None
+
+    @property
+    def draft_ready(self) -> bool:
+        return self.draft_zone is not None and self._start is None
+
     def clear(self, text: str) -> None:
         """Remove the image and show a text message instead (e.g. camera off)."""
         self._photo = None
@@ -137,12 +145,12 @@ class ZonePreview(tk.Canvas):
 
     def _release(self, event) -> None:
         """Mouse button up: finalise the draft and tell the parent about it."""
+        if not self.editing:
+            return
         self._drag(event)   # apply the final mouse position
         self._start = None  # the drag gesture is over
-        if self.draft_zone is not None:
-            # Only notify if a valid rectangle exists. A plain click (no drag)
-            # or a press outside the image leaves draft_zone as None.
-            self._on_draft()
+        # Invalid gestures can remove a previous draft, so notify for those too.
+        self._on_draft()
 
     # ------------------------------------------------------------------
     # Rendering

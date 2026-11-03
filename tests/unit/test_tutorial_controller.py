@@ -1,13 +1,14 @@
 """Guide navigation is independent of camera, protection, and persistence."""
 
 from pathlib import Path
+from dataclasses import replace
 import sys
 import unittest
 from unittest.mock import Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from red_handed.ui.tutorial_controller import SETUP_STEPS, TutorialController
+from red_handed.ui.tutorial_controller import TutorialContext, TutorialController
 
 
 class TutorialControllerTests(unittest.TestCase):
@@ -15,6 +16,7 @@ class TutorialControllerTests(unittest.TestCase):
         self.show = Mock()
         self.hide = Mock()
         self.guide = TutorialController(self.show, self.hide)
+        self.live = TutorialContext(camera_available=True, monitoring=True, preview_ready=True)
 
     def test_start_back_and_next_stay_within_steps(self):
         self.guide.back()
@@ -26,9 +28,15 @@ class TutorialControllerTests(unittest.TestCase):
         self.guide.back()
         self.assertEqual(self.guide.index, 0)
         self.guide.next()
-        self.show.assert_called_with(SETUP_STEPS[1], 1, len(SETUP_STEPS))
+        self.assertEqual(self.guide.index, 0)  # Clicking Next cannot bypass camera setup.
+        self.guide.update(self.live)
+        self.assertEqual(self.guide.index, 1)
         self.guide.back()
-        self.show.assert_called_with(SETUP_STEPS[0], 0, len(SETUP_STEPS))
+        self.assertEqual(self.guide.index, 0)
+        self.guide.update(self.live)
+        self.assertEqual(self.guide.index, 0)  # Reviewing Back is stable across frames.
+        self.guide.next()
+        self.assertEqual(self.guide.index, 1)
 
     def test_skip_is_idempotent_and_replay_starts_at_first_step(self):
         self.guide.start()
@@ -42,12 +50,56 @@ class TutorialControllerTests(unittest.TestCase):
         self.assertTrue(self.guide.active)
         self.assertEqual(self.guide.index, 0)
 
-    def test_last_step_closes_instead_of_advancing_out_of_bounds(self):
-        self.guide.start()
-        for _ in SETUP_STEPS:
-            self.guide.next()
+    def test_saved_zone_requires_explicit_choice_before_closing(self):
+        context = replace(self.live, zone_open=True, saved_zone=True)
+        self.guide.start(context)
+        self.assertEqual(self.guide.index, 2)
+        self.assertEqual(self.show.call_args.args[0].next_label, "Keep this zone")
+        self.guide.next()
+        self.assertEqual(self.guide.index, 4)
+        self.guide.next()
         self.assertFalse(self.guide.active)
         self.hide.assert_called_once_with()
+
+    def test_save_step_requires_success_event_not_existing_saved_zone(self):
+        context = replace(self.live, zone_open=True, saved_zone=True)
+        self.guide.start(context)
+        self.guide.redraw()
+        self.guide.next()
+        self.assertEqual(self.guide.index, 2)
+        draft = replace(context, draft_ready=True)
+        self.guide.update(draft)
+        self.assertEqual(self.guide.index, 3)
+        self.guide.save_failed()
+        self.guide.next()
+        self.assertEqual(self.guide.index, 3)
+        self.guide.update(context)  # Discarding a draft is not a successful save.
+        self.assertEqual(self.guide.index, 2)
+        self.guide.update(draft)
+        self.guide.zone_saved(context)
+        self.assertEqual(self.guide.index, 4)
+
+    def test_back_from_save_preserves_need_to_save_and_repeated_frames_do_not_rerender(self):
+        context = replace(self.live, zone_open=True, draft_ready=True)
+        self.guide.start(context)
+        self.assertEqual(self.guide.index, 3)
+        self.guide.back()
+        self.assertEqual(self.guide.index, 2)
+        calls = self.show.call_count
+        self.guide.update(context)
+        self.guide.update(context)
+        self.assertEqual(self.show.call_count, calls)
+        self.guide.next()
+        self.assertEqual(self.guide.index, 3)
+
+    def test_camera_or_panel_loss_returns_to_required_step(self):
+        context = replace(self.live, zone_open=True, draft_ready=True)
+        self.guide.start(context)
+        self.guide.update(replace(context, zone_open=False))
+        self.assertEqual(self.guide.index, 1)
+        self.guide.update(replace(context, camera_available=False, monitoring=False, preview_ready=False))
+        self.assertEqual(self.guide.index, 0)
+        self.assertEqual(self.show.call_args.args[0].target, "retry_camera")
 
 
 if __name__ == "__main__":

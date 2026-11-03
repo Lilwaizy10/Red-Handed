@@ -7,17 +7,18 @@ from red_handed.ui.tutorial_controller import TutorialStep
 
 
 class TutorialView(ttk.LabelFrame):
-    def __init__(self, parent, *, back, next_step, skip) -> None:
+    def __init__(self, parent, *, back, next_step, skip, redraw) -> None:
         super().__init__(parent, text="Guided setup", padding=8)
         self.columnconfigure(0, weight=1)
         self.progress = ttk.Label(self, font=("Segoe UI", 10, "bold"))
         self.progress.grid(row=0, column=0, sticky="w", padx=(0, 8))
-        controls = ttk.Frame(self)
+        controls = self.controls = ttk.Frame(self)
         controls.grid(row=0, column=1, sticky="e")
         self.back_button = ttk.Button(controls, text="Back", command=back, width=6)
         self.back_button.pack(side=tk.LEFT)
         self.next_button = ttk.Button(controls, text="Next", command=next_step, width=11)
         self.next_button.pack(side=tk.LEFT, padx=4)
+        self.redraw_button = ttk.Button(controls, text="Draw a replacement", command=redraw)
         self.skip_button = ttk.Button(controls, text="Skip tutorial", command=skip)
         self.skip_button.pack(side=tk.LEFT)
         self.instruction = ttk.Label(self, wraplength=560, justify=tk.LEFT)
@@ -28,12 +29,23 @@ class TutorialView(ttk.LabelFrame):
         self.progress.configure(text=f"Step {index + 1} of {total}: {step.title}")
         self.instruction.configure(text=step.instruction)
         self.back_button.configure(state=tk.NORMAL if index else tk.DISABLED)
-        # Closing this orientation does not assert that setup actions succeeded.
-        self.next_button.configure(text="Close guide" if index == total - 1 else "Next")
+        self.next_button.configure(text=step.next_label, width=max(11, len(step.next_label)),
+                                   state=tk.NORMAL if step.next_enabled else tk.DISABLED)
+        if step.alternate_label:
+            self.redraw_button.configure(text=step.alternate_label)
+            self.redraw_button.pack(side=tk.LEFT, before=self.skip_button, padx=(0, 4))
+        else:
+            self.redraw_button.pack_forget()
+        if self.winfo_width() > 24:
+            self._wrap(self.winfo_width())
 
     def _resize(self, event) -> None:
         if event.width > 24:
-            self.instruction.configure(wraplength=event.width - 24)
+            self._wrap(event.width)
+
+    def _wrap(self, width) -> None:
+        self.instruction.configure(wraplength=width - 24)
+        self.progress.configure(wraplength=max(100, width - self.controls.winfo_reqwidth() - 32))
 
 
 class ControlHighlighter:
