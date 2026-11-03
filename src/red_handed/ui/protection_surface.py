@@ -47,7 +47,7 @@ class TkProtectionSurface:
         if test:
             title_lines.append('TEST MODE')
         if mode is ProtectionMode.PRIVACY_OVERLAY:
-            title_lines += ['Red-Handed', 'Privacy Protection Active']
+            title_lines += ['Red-Handed', 'What you looking at?']
         self.title.configure(background=background, foreground='white', text='\n'.join(title_lines))
         self.details.configure(background=background, foreground='#d1d5db',
             text=f"{'TEST MODE - closes after 5 seconds' if test else 'Protection active: ' + source}\n"

@@ -28,13 +28,15 @@ class CalibrationView(ttk.LabelFrame):
 
     def __init__(self, parent: ttk.Frame, people_text: tk.StringVar,
                  save_zone=None, discard=None) -> None:
-        super().__init__(parent, text="Status / Calibration", padding=8)
+        super().__init__(parent, text="Privacy Zone Setup", padding=8)
         ttk.Label(self, text="Detected persons:").grid(row=0, column=0, sticky="w")
         ttk.Label(self, textvariable=people_text).grid(row=0, column=1, sticky="w")
         ttk.Label(
             self,
-            text="Start monitoring, then drag a rectangle on the preview. Draw again to modify it.\n"
-                 "Only the saved zone is used for risk evaluation.",
+            text="Start monitoring, then drag inside the camera image and click Save Zone.\n"
+                 "One saved zone loads automatically; saving a new zone replaces it.\n"
+                 "Solid blue = zone used for monitoring. Dashed yellow = unsaved replacement.\n"
+                 "Discard Draft removes only the unsaved drawing and keeps your saved zone.",
             wraplength=570,
         ).grid(row=1, column=0, columnspan=2, sticky="w")
         self.save_button = ttk.Button(self, text="Save Zone", command=save_zone)

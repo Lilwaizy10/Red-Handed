@@ -2,7 +2,9 @@
 
 Red-Handed is a Windows desktop privacy-protection system intended to reduce shoulder-surfing by detecting additional people within a configured privacy zone and activating a selected screen-protection mode.
 
-**Current status:** Phase 5 application/history integration implemented; validation results are recorded in docs/phase5_testing.md.
+**Current status:** Phase 5 application/history integration and guided setup are implemented.
+See [Phase 5 validation](docs/phase5_testing.md) and the
+[tutorial checks and presentation script](docs/tutorial_testing.md).
 
 **Initial target:** 64-bit Windows 10 and Windows 11
 
@@ -23,13 +25,55 @@ Install dependencies and run:
 .\.venv\Scripts\python.exe run_red_handed.py
 ```
 
-Run controller tests:
+Run the unit and integration checks from the repository root:
 
 ```powershell
+$env:PYTHONPATH = (Resolve-Path .\src).Path
 .\.venv\Scripts\python.exe -B -m unittest discover -s tests/unit -v
+.\.venv\Scripts\python.exe -B -m unittest discover -s tests/integration -v
 ```
 
-The calibration screen supports drawing, saving, and reloading a privacy zone.
+## Guided setup
+
+On Home, click **Guide me through setup**, or choose **Replay tutorial** in the
+sidebar. The guide highlights the control to use and waits for the relevant
+action to succeed:
+
+1. Click **Start Monitoring** and wait for the live preview. If the camera is
+   unavailable, follow **Retry Camera Access**.
+2. Open **Privacy Zone Setup**. Drag inside the camera image, then click
+   **Save Zone**. If a saved zone exists, choose **Keep this zone** or
+   **Draw a replacement**.
+3. Open **Protection Mode**. Choose a mode and save, or choose
+   **Keep current settings**.
+4. Return Home and click **Test Protection (5 seconds)**. The preview ends after
+   five seconds or can be dismissed early with **Dismiss Test** or the configured
+   shortcut. It does not start monitoring.
+5. Review the saved settings, actual preview mode, and current runtime status.
+   Choose **Finish** or **Customise more**.
+
+The sidebar's **Customise more** menu also provides independent optional guides:
+
+- **Timing:** set the wait before covering and restoring the screen, then save.
+- **Emergency shortcut:** save a shortcut and optionally verify it by pressing it
+  during a protection preview. A timeout alone does not verify the shortcut.
+- **Selected applications:** choose whether to restrict automatic protection,
+  select installed `.exe` files, and save. An enabled empty list blocks automatic
+  protection; manual protection remains independent.
+
+Guide progress is kept in memory. Saved settings survive restart, while replay
+checks the current setup again. **Skip tutorial** leaves monitoring, protection
+requests, and unsaved inputs in place. During a guide, navigation that would
+discard edits asks you to save or use **Discard changes** / **Discard Draft**.
+
+## Privacy zone and detection
+
+There is one saved zone. It loads automatically; no further selection is needed.
+The solid blue outline is the zone used for monitoring. A dashed yellow outline
+is an unsaved replacement. **Save Zone** replaces the saved zone; **Discard Draft**
+keeps it. With a live preview, Home shows the saved outline as read-only.
+Drawing is available in **Privacy Zone Setup** while a camera image is displayed.
+
 Only the saved zone affects monitoring. An additional face is inside when its
 centre falls within the zone, including the boundary. The largest detected
 face is assumed to be the primary user.
@@ -46,7 +90,8 @@ delay. Continuous absence clears it after the recovery delay. Re-entry cancels
 recovery, and pending recovery still counts as active risk.
 
 Unknown or stale evidence resets transient timing and is displayed as
-unavailable risk. Sensitivity is saved but has no defined behavioural effect.
+unavailable risk. Sensitivity has no defined behavioural effect, so its control
+is disabled and labelled unavailable; the stored value is preserved.
 
 ## Screen protection
 
@@ -69,8 +114,10 @@ Automatic protection follows confirmed privacy risk and remains active during
 pending recovery. Automatic and manual requests are independent. Stop Monitoring
 clears only the automatic request.
 
-Status / Calibration includes a labelled five-second Test Protection action.
-A real automatic request is not cleared by the test timeout.
+Home and Privacy Zone Setup provide a labelled five-second Test Protection
+action. An existing automatic or manual request prevents starting a test.
+A real request arising during a test is not cleared by its timeout. The guide
+reports a failed or interrupted preview without marking that step complete.
 
 Protection covers the primary display only. It is not a Windows lock screen
 or secure desktop. 
@@ -93,7 +140,7 @@ history panel and do not disable screen protection.
 
 ```text
 docs/                   SC2006 laboratory documentation
-src/red_handed/         Provisional Python application package
+src/red_handed/         Python application package
   core/                 Monitoring, risk, protection, and runtime state
   detection/            Camera, person detection, and privacy-zone concerns
   ui/                   User-interface views and controls

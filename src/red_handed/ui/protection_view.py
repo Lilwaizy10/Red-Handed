@@ -20,7 +20,7 @@ MIN_WRAP = 200         # never wrap text narrower than this, even in a tiny wind
 class ProtectionView(ttk.LabelFrame):
     """A framed panel for choosing the protection mode and emergency hotkey."""
 
-    def __init__(self, parent, get_settings, save_settings):
+    def __init__(self, parent, get_settings, save_settings, *, on_change=None, on_saved=None):
         """
         parent        - the Tk widget that will contain this panel
         get_settings  - callable returning the current ProtectionSettings
@@ -32,6 +32,9 @@ class ProtectionView(ttk.LabelFrame):
         # Store the injected callbacks so reload() and save() can use them.
         self._get_settings = get_settings
         self._save_settings = save_settings
+        self._on_change = on_change or (lambda: None)
+        self._on_saved = on_saved or (lambda: None)
+        self.save_error = None
 
         # Tk variables hold the live values of the widgets. Passing master=self
         # ties them to this frame's Tk root, which avoids "no default root" errors.
@@ -45,21 +48,15 @@ class ProtectionView(ttk.LabelFrame):
 
         # One radio button per protection mode. Rows 0..N-1 are used.
         modes = list(ProtectionMode)
+        descriptions = {
+            ProtectionMode.PRIVACY_OVERLAY: "Privacy Overlay - cover the primary display",
+            ProtectionMode.SCREEN_BLACKOUT: "Screen Blackout - cover the display in black",
+            ProtectionMode.DECOY_WEBSITE: "Decoy Website - requires Chrome; overlay fallback",
+        }
         for row, mode in enumerate(modes):
-            if mode is ProtectionMode.DECOY_WEBSITE:
-                ttk.Radiobutton(
-                    self,
-                    text=mode.value + " (Requires Google Chrome)",
-                    value=mode.value,
-                    variable=self.mode,
-                ).grid(row=row, column=0, sticky='w')
-            else:
-                ttk.Radiobutton(
-                    self,
-                    text=mode.value,
-                    value=mode.value,
-                    variable=self.mode,
-                ).grid(row=row, column=0, sticky='w')
+            ttk.Radiobutton(
+                self, text=descriptions[mode], value=mode.value, variable=self.mode,
+            ).grid(row=row, column=0, sticky='w')
 
         # Everything below is positioned relative to 'base' (the number of
         # modes), so adding a new ProtectionMode never causes widgets to
@@ -71,19 +68,21 @@ class ProtectionView(ttk.LabelFrame):
             self, text='Emergency hotkey (Ctrl/Alt/Shift + A-Z, 0-9, F1-F11):'
         ).grid(row=base, column=0, sticky='w')
 
-        ttk.Entry(self, textvariable=self.hotkey, width=28).grid(
-            row=base+1, column=0, sticky='w'
-        )
+        self.hotkey_entry = ttk.Entry(self, textvariable=self.hotkey, width=28)
+        self.hotkey_entry.grid(row=base+1, column=0, sticky='w')
 
-        ttk.Button(
+        self.save_button = ttk.Button(
             self, text='Save Protection Settings', command=self.save
-        ).grid(row=0, column=1, padx=8)
+        )
+        self.save_button.grid(row=0, column=1, padx=8)
+        self.discard_button = ttk.Button(self, text='Discard changes', command=self.reload)
+        self.discard_button.grid(row=1, column=1, padx=8)
 
         # Static note explaining the current limitations to the user.
         self._note_label = ttk.Label(
             self,
             text='The shortcut toggles the manual request only. Automatic protection may remain.\n'
-                 'Only the primary display is covered. Application-aware protection is not implemented.',
+                 'Only the primary display is covered. Use Protected Applications to limit when automatic protection runs.',
             wraplength=650,
         )
         self._note_label.grid(row=base+2, column=0, columnspan=2, sticky='w')
@@ -97,6 +96,13 @@ class ProtectionView(ttk.LabelFrame):
 
         # Fill the widgets with the currently saved settings.
         self.reload()
+        self.mode.trace_add('write', lambda *_: self._on_change())
+        self.hotkey.trace_add('write', lambda *_: self._on_change())
+
+    @property
+    def has_unsaved_changes(self):
+        saved = self._get_settings()
+        return self.mode.get() != saved.mode.value or self.hotkey.get().strip() != saved.hotkey
 
     def _on_resize(self, event):
         """Keep long text wrapped to the panel width instead of a fixed 650px."""
@@ -110,6 +116,7 @@ class ProtectionView(ttk.LabelFrame):
         Errors are shown in the feedback line rather than raised, so a missing
         or corrupt settings file cannot stop the whole view from being built.
         """
+        self.save_error = None
         try:
             settings = self._get_settings()
         except (ValueError, OSError) as error:
@@ -119,13 +126,16 @@ class ProtectionView(ttk.LabelFrame):
         self.mode.set(settings.mode.value)
         self.hotkey.set(settings.hotkey)
         self.feedback.set('')  # clear any old message
+        self._on_change()
 
     def save(self):
         """Validate and persist the settings currently shown in the widgets."""
         # Guard: mode can be empty if loading failed and the user never picked one.
         # Without this, ProtectionMode('') raises an unfriendly error message.
         if not self.mode.get():
-            self.feedback.set('Not saved: please select a protection mode.')
+            self.save_error = 'Please select a protection mode.'
+            self.feedback.set(f'Not saved: {self.save_error}')
+            self._on_change()
             return
 
         # strip() removes accidental leading/trailing spaces from the hotkey.
@@ -137,8 +147,12 @@ class ProtectionView(ttk.LabelFrame):
             # to validate the hotkey and raise ValueError/OSError on problems.
             self._save_settings(ProtectionSettings(ProtectionMode(self.mode.get()), hotkey))
         except (ValueError, OSError) as error:
+            self.save_error = str(error)
             self.feedback.set(f'Not saved: {error}')
+            self._on_change()
         else:
             # Runs only if no exception was raised above.
-            self.hotkey.set(hotkey)  # show the cleaned-up value back to the user
+            self.save_error = None
+            self.hotkey.set(self._get_settings().hotkey)
             self.feedback.set('Protection mode and hotkey saved.')
+            self._on_saved()
