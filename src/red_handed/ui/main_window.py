@@ -30,6 +30,8 @@ from red_handed.storage.event_store import EventStore
 from red_handed.system.active_application import ActiveApplicationDetector
 from red_handed.ui.event_history_view import EventHistoryView
 from red_handed.ui.static_web_opener import StaticWebOpener
+from red_handed.ui.tutorial_controller import TutorialController, TutorialStep
+from red_handed.ui.tutorial_view import ControlHighlighter, TutorialView
 
 
 class MainWindow:
@@ -60,6 +62,7 @@ class MainWindow:
             error="Foreground application has not been checked."
         )
         self.recorder = None
+        self._current_view = "home"
         # Tests can inject a temporary store instead of using real user settings.
         self.settings_store = settings_store if settings_store is not None else SettingsStore()
         self._frame_job: str | None = None
@@ -105,6 +108,8 @@ class MainWindow:
 
         self._configure_window()
         self._build_layout()
+        self.tutorial_highlighter = ControlHighlighter(root)
+        self.tutorial = TutorialController(self._show_tutorial_step, self._hide_tutorial)
         # Keep history beside the selected settings file. Tests using temporary
         # settings therefore also use temporary history rather than real user data.
         event_path = self.settings_store.path.with_name("events.json")
@@ -172,17 +177,19 @@ class MainWindow:
             anchor="w", pady=(0, 20)
         )
         ttk.Button(sidebar, text="Home", command=self.show_home).pack(fill=tk.X, pady=3)
-        ttk.Button(sidebar, text="Privacy Zone Setup", command=self.show_calibration).pack(
-            fill=tk.X, pady=3
+        self.zone_setup_button = ttk.Button(
+            sidebar, text="Privacy Zone Setup", command=self.show_calibration
         )
+        self.zone_setup_button.pack(fill=tk.X, pady=3)
         ttk.Button(sidebar, text="Detection & Timing", command=self.show_settings).pack(
             fill=tk.X, pady=3
         )
-        ttk.Button(
+        self.protection_mode_button = ttk.Button(
             sidebar,
             text="Protection Mode",
             command=self.show_protection,
-        ).pack(fill=tk.X, pady=3)
+        )
+        self.protection_mode_button.pack(fill=tk.X, pady=3)
         ttk.Button(
             sidebar,
             text="Protected Applications",
@@ -193,22 +200,41 @@ class MainWindow:
             text="Event History",
             command=self.show_history,
         ).pack(fill=tk.X, pady=3)
+        self.replay_tutorial_button = ttk.Button(
+            sidebar, text="Replay tutorial", command=self.start_tutorial
+        )
+        self.replay_tutorial_button.pack(fill=tk.X, pady=(20, 3))
         content = ttk.Frame(shell)
         self.content = content
         content.grid(row=0, column=1, sticky="nsew")
         content.columnconfigure(0, weight=1)
         content.rowconfigure(4, weight=1)
 
-        ttk.Label(content, text="Red-Handed", style="Title.TLabel").grid(
-            row=0, column=0, sticky="w"
-        )
-        ttk.Label(
-            content,
+        self.title_label = ttk.Label(content, text="Red-Handed", style="Title.TLabel")
+        self.title_label.grid(row=0, column=0, sticky="w")
+        self.intro_frame = ttk.Frame(content)
+        self.intro_frame.grid(row=1, column=0, sticky="ew", pady=(0, 14))
+        self.intro_frame.columnconfigure(0, weight=1)
+        self.intro_label = ttk.Label(
+            self.intro_frame,
             text="Protect your screen from shoulder surfers.\n"
                  "Automatically cover your screen when an additional person is detected in your saved privacy zone.",
             foreground="#4b5563",
             wraplength=650,
-        ).grid(row=1, column=0, sticky="w", pady=(0, 14))
+        )
+        self.intro_label.grid(row=0, column=0, sticky="w")
+        self.guide_button = ttk.Button(
+            self.intro_frame, text="Guide me through setup", command=self.start_tutorial
+        )
+        self.guide_button.grid(row=1, column=0, sticky="w", pady=(4, 0))
+        self.tutorial_view = TutorialView(
+            self.intro_frame,
+            back=lambda: self.tutorial.back(),
+            next_step=lambda: self.tutorial.next(),
+            skip=lambda: self.tutorial.skip(),
+        )
+        self.tutorial_view.grid(row=0, column=0, sticky="ew")
+        self.tutorial_view.grid_remove()
 
         status_row = ttk.Frame(content)
         status_row.grid(row=2, column=0, sticky="ew", pady=(0, 12))
@@ -331,6 +357,37 @@ class MainWindow:
 
         self._refresh_controls()
 
+    def start_tutorial(self) -> None:
+        if not self._closed:
+            self.tutorial.start()
+
+    def _show_tutorial_step(self, step: TutorialStep, index: int, total: int) -> None:
+        self.title_label.grid_remove()
+        self.intro_label.grid_remove()
+        self.guide_button.grid_remove()
+        self.tutorial_view.render(step, index, total)
+        self.tutorial_view.grid()
+        targets = {
+            "start_monitoring": self.start_button,
+            "privacy_zone": self.zone_setup_button,
+            "protection_mode": self.protection_mode_button,
+        }
+        self.tutorial_highlighter.show(targets[step.target])
+
+    def _hide_tutorial(self) -> None:
+        self.tutorial_highlighter.clear()
+        self.tutorial_view.grid_remove()
+        self.title_label.grid()
+        self.intro_label.grid()
+        self._set_current_view(self._current_view)
+
+    def _set_current_view(self, name: str) -> None:
+        self._current_view = name
+        if name == "home" and not self.tutorial.active:
+            self.guide_button.grid()
+        else:
+            self.guide_button.grid_remove()
+
     def show_home(self) -> None:
         """Show the dashboard without changing camera ownership or monitoring."""
         self.calibration.grid_remove()
@@ -341,6 +398,7 @@ class MainWindow:
         self.protection_view.grid_remove()
         self.application_view.grid_remove()
         self.history_view.grid_remove()
+        self._set_current_view("home")
 
     def show_calibration(self) -> None:
         """FR12.3 / FR12.4: share the running preview and current count."""
@@ -350,18 +408,21 @@ class MainWindow:
         self.protection_view.grid_remove()
         self.application_view.grid_remove()
         self.history_view.grid_remove()
+        self._set_current_view("calibration")
 
     def show_protection(self) -> None:
         """Open protection settings and discard stale edits in that panel."""
         self.show_home()
         self.protection_view.reload()
         self.protection_view.grid()
+        self._set_current_view("protection")
 
     def show_applications(self) -> None:
         """Open protected-application settings and discard stale edits."""
         self.show_home()
         self.application_view.reload()
         self.application_view.grid()
+        self._set_current_view("applications")
 
     def save_application_settings(self, settings) -> None:
         """Persist first, then immediately apply the updated automatic gate."""
@@ -382,6 +443,7 @@ class MainWindow:
         self.show_home()
         self.history_view.refresh(force=True)
         self.history_view.grid()
+        self._set_current_view("history")
 
     def _poll_foreground_application(self):
         """Reevaluate automatic protection without modifying risk timing."""
@@ -445,6 +507,7 @@ class MainWindow:
         # Discard stale typed text from an earlier visit to this panel.
         self.settings_view.reload()
         self.settings_view.grid()
+        self._set_current_view("settings")
 
     def save_settings(self, settings: MonitoringSettings) -> None:
         """Persist before changing active settings; failed saves preserve previous values.
@@ -800,6 +863,10 @@ class MainWindow:
                     logger.exception("Could not cancel %s", attribute)
 
         cleanup_steps = []
+        tutorial = getattr(self, "tutorial", None)
+        if tutorial is not None:
+            cleanup_steps.append(tutorial.skip)
+            cleanup_steps.append(self.tutorial_highlighter.close)
         if self.hotkeys is not None:
             cleanup_steps.append(self.hotkeys.close)
 
