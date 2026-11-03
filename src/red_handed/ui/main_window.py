@@ -54,6 +54,7 @@ class MainWindow:
         self._enable_hotkeys = enable_hotkeys
         self._hotkey_job = None
         self._test_job = None
+        self._test_notice = None
         self._hotkey_error = None
         self.hotkeys = None
         self._foreground_job = None
@@ -177,7 +178,8 @@ class MainWindow:
         ttk.Label(sidebar, text="RED-HANDED", style="Heading.TLabel").pack(
             anchor="w", pady=(0, 20)
         )
-        ttk.Button(sidebar, text="Home", command=self.show_home).pack(fill=tk.X, pady=3)
+        self.home_button = ttk.Button(sidebar, text="Home", command=self.show_home)
+        self.home_button.pack(fill=tk.X, pady=3)
         self.zone_setup_button = ttk.Button(
             sidebar, text="Privacy Zone Setup", command=self.show_calibration
         )
@@ -223,11 +225,15 @@ class MainWindow:
             foreground="#4b5563",
             wraplength=650,
         )
-        self.intro_label.grid(row=0, column=0, sticky="w")
+        self.intro_label.grid(row=0, column=0, columnspan=2, sticky="w")
         self.guide_button = ttk.Button(
             self.intro_frame, text="Guide me through setup", command=self.start_tutorial
         )
         self.guide_button.grid(row=1, column=0, sticky="w", pady=(4, 0))
+        self.home_test_button = ttk.Button(
+            self.intro_frame, text="Test Protection (5 seconds)", command=self.begin_test_protection
+        )
+        self.home_test_button.grid(row=1, column=1, sticky="e", pady=(4, 0))
         self.tutorial_view = TutorialView(
             self.intro_frame,
             back=lambda: self.tutorial.back(),
@@ -235,7 +241,7 @@ class MainWindow:
             skip=lambda: self.tutorial.skip(),
             redraw=lambda: self.tutorial.redraw(),
         )
-        self.tutorial_view.grid(row=0, column=0, sticky="ew")
+        self.tutorial_view.grid(row=0, column=0, columnspan=2, sticky="ew")
         self.tutorial_view.grid_remove()
 
         status_row = ttk.Frame(content)
@@ -310,11 +316,12 @@ class MainWindow:
         )
         self.calibration.grid(row=8, column=0, sticky="ew", pady=(8, 0))
         self.calibration.grid_remove()
-        ttk.Button(
+        self.calibration_test_button = ttk.Button(
             self.calibration,
             text="Test Protection (5 seconds)",
             command=self.begin_test_protection,
-        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=4)
+        )
+        self.calibration_test_button.grid(row=3, column=0, columnspan=2, sticky="w", pady=4)
     
         self.settings_view = SettingsView(
             content, lambda: self.controller.settings, self.save_settings
@@ -329,6 +336,8 @@ class MainWindow:
             content,
             lambda: self.protection_settings,
             self.save_protection_settings,
+            on_change=self._sync_tutorial,
+            on_saved=self._protection_settings_saved,
         )
         self.protection_view.grid(
             row=8, column=0, sticky="ew", pady=(8, 0)
@@ -363,6 +372,15 @@ class MainWindow:
 
     def _tutorial_context(self) -> TutorialContext:
         state = self.controller.state
+        runtime = (
+            f"Monitoring: {state.monitoring_status.value.lower()}; camera: {state.camera_status.value.lower()}. "
+            f"{self.protection_text.get()}."
+        )
+        if state.monitoring_status is MonitoringStatus.ACTIVE and not state.protection_active:
+            if not ApplicationAwarePolicy.allows(self.application_settings, self._last_external_application):
+                runtime += " Selected-app restriction currently blocks automatic protection."
+            elif state.risk_status is None:
+                runtime += " Waiting for valid detection."
         return TutorialContext(
             camera_available=state.camera_status is CameraStatus.AVAILABLE,
             monitoring=state.monitoring_status is MonitoringStatus.ACTIVE,
@@ -371,7 +389,25 @@ class MainWindow:
             saved_zone=self.controller.settings.privacy_zone is not None,
             draft_ready=self.preview.draft_ready,
             preview_error=self._preview_error,
+            protection_open=self._current_view == "protection",
+            protection_dirty=self.protection_view.has_unsaved_changes,
+            protection_save_failed=self.protection_view.save_error is not None,
+            home_open=self._current_view == "home",
+            selected_mode=self.protection_settings.mode.value,
+            hotkey=self.protection_settings.hotkey,
+            hotkey_available=bool(self._enable_hotkeys and not self._hotkey_error and self.hotkeys is not None
+                                 and self.hotkeys.current is not None),
+            test_requested=state.test_protection_requested,
+            automatic_requested=state.automatic_protection_requested,
+            manual_requested=state.manual_protection_requested,
+            protection_active=state.protection_active,
+            actual_mode=self.protection.active_mode.value if self.protection.active_mode is not None else "",
+            protection_error=state.protection_error or "",
+            runtime_summary=runtime,
         )
+
+    def _protection_settings_saved(self) -> None:
+        self.tutorial.protection_saved(self._tutorial_context())
 
     def _sync_tutorial(self) -> None:
         tutorial = getattr(self, "tutorial", None)
@@ -401,8 +437,15 @@ class MainWindow:
             "preview": self.preview,
             "save_zone": self.calibration.save_button,
             "protection_mode": self.protection_mode_button,
+            "protection_choices": self.protection_view,
+            "save_protection": self.protection_view.save_button,
+            "home": self.home_button,
+            "test_protection": self.home_test_button,
         }
-        self.tutorial_highlighter.show(targets[step.target])
+        if step.target is None:
+            self.tutorial_highlighter.clear()
+        else:
+            self.tutorial_highlighter.show(targets[step.target])
 
     def _hide_tutorial(self) -> None:
         self.tutorial_highlighter.clear()
@@ -417,13 +460,27 @@ class MainWindow:
             self.guide_button.grid()
         else:
             self.guide_button.grid_remove()
+        if name == "home":
+            self.home_test_button.grid()
+        else:
+            self.home_test_button.grid_remove()
         self._sync_tutorial()
+
+    def _can_leave_view(self) -> bool:
+        if self.tutorial.active:
+            if self.preview.draft_zone is not None:
+                self.message_text.set("Save Zone or Discard Draft before leaving Privacy Zone Setup. "
+                                      "Your unsaved drawing has been kept.")
+                return False
+            if self._current_view == "protection" and self.protection_view.has_unsaved_changes:
+                self.message_text.set("Save Protection Settings or Discard changes before leaving Protection Mode. "
+                                      "Your unsaved changes have been kept.")
+                return False
+        return True
 
     def show_home(self) -> bool:
         """Show the dashboard without changing camera ownership or monitoring."""
-        if self.tutorial.active and self.preview.draft_zone is not None:
-            self.message_text.set("Save Zone or Discard Draft before leaving Privacy Zone Setup. "
-                                  "Your unsaved drawing has been kept.")
+        if not self._can_leave_view():
             return False
         self.calibration.grid_remove()
         self.settings_view.grid_remove()
@@ -438,6 +495,8 @@ class MainWindow:
 
     def show_calibration(self) -> None:
         """FR12.3 / FR12.4: share the running preview and current count."""
+        if self._current_view != "calibration" and not self._can_leave_view():
+            return
         self.calibration.grid()
         self.settings_view.grid_remove()
         if not self.preview.editing:
@@ -449,6 +508,8 @@ class MainWindow:
 
     def show_protection(self) -> None:
         """Open protection settings and discard stale edits in that panel."""
+        if self._current_view == "protection":
+            return
         if not self.show_home():
             return
         self.protection_view.reload()
@@ -653,6 +714,15 @@ class MainWindow:
         self.retry_button.configure(
             state=tk.NORMAL if not active and not available else tk.DISABLED
         )
+        self._update_test_controls()
+
+    def _update_test_controls(self) -> None:
+        state = self.controller.state
+        blocked = state.test_protection_requested or state.automatic_protection_requested or state.manual_protection_requested
+        for name in ("home_test_button", "calibration_test_button"):
+            button = getattr(self, name, None)
+            if button is not None:
+                button.configure(state=tk.DISABLED if blocked else tk.NORMAL)
 
     def retry_camera(self) -> None:
         """FR13.4 - Let the user retry after a camera error."""
@@ -805,6 +875,8 @@ class MainWindow:
             self.hotkey_text.set(
                 "No global hotkey registered. Use Emergency Protect."
             )
+        self._update_test_controls()
+        self._sync_tutorial()
 
     def toggle_manual(self) -> None:
         """Toggle manual protection independently of camera and risk state."""
@@ -827,8 +899,17 @@ class MainWindow:
         try:
             self.protection.begin_test()
         except ValueError as error:
-            self.settings_notice.set(str(error))
+            self._test_notice = str(error)
+            self.settings_notice.set(self._test_notice)
+            self._sync_tutorial()
             return
+
+        if getattr(self, "_test_notice", None) is not None:
+            if self.settings_notice.get() == self._test_notice:
+                self.settings_notice.set("")
+            self._test_notice = None
+        if getattr(self, "tutorial", None) is not None:
+            self.tutorial.test_started(self._tutorial_context())
 
         if self._test_job is not None:
             self.root.after_cancel(self._test_job)
@@ -847,6 +928,8 @@ class MainWindow:
 
         self.protection.end_test()
         self._refresh_protection()
+        if getattr(self, "tutorial", None) is not None:
+            self.tutorial.test_finished(self._tutorial_context())
 
     def save_protection_settings(self, settings: ProtectionSettings) -> None:
         """Reserve the new shortcut, persist settings, then replace the old one."""

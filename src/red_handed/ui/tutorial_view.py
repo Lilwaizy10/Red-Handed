@@ -28,7 +28,7 @@ class TutorialView(ttk.LabelFrame):
     def render(self, step: TutorialStep, index: int, total: int) -> None:
         self.progress.configure(text=f"Step {index + 1} of {total}: {step.title}")
         self.instruction.configure(text=step.instruction)
-        self.back_button.configure(state=tk.NORMAL if index else tk.DISABLED)
+        self.back_button.configure(state=tk.NORMAL if index and step.back_enabled else tk.DISABLED)
         self.next_button.configure(text=step.next_label, width=max(11, len(step.next_label)),
                                    state=tk.NORMAL if step.next_enabled else tk.DISABLED)
         if step.alternate_label:

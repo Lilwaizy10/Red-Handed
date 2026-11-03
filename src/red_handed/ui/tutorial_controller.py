@@ -8,10 +8,11 @@ from typing import Callable
 class TutorialStep:
     title: str
     instruction: str
-    target: str
+    target: str | None
     next_enabled: bool = False
     next_label: str = "Next"
     alternate_label: str | None = None
+    back_enabled: bool = True
 
 
 @dataclass(frozen=True)
@@ -23,6 +24,20 @@ class TutorialContext:
     saved_zone: bool = False
     draft_ready: bool = False
     preview_error: bool = False
+    protection_open: bool = False
+    protection_dirty: bool = False
+    protection_save_failed: bool = False
+    home_open: bool = False
+    selected_mode: str = "Privacy Overlay"
+    hotkey: str = "Ctrl+Alt+P"
+    hotkey_available: bool = False
+    test_requested: bool = False
+    automatic_requested: bool = False
+    manual_requested: bool = False
+    protection_active: bool = False
+    actual_mode: str = ""
+    protection_error: str = ""
+    runtime_summary: str = ""
 
     @property
     def camera_ready(self) -> bool:
@@ -54,11 +69,21 @@ SETUP_STEPS = (
     ),
     TutorialStep(
         "Choose screen protection",
-        "Click Protection Mode to choose how your screen is covered and save any changes. "
-        "You can keep the current settings.",
+        "Click Protection Mode in the sidebar to choose how your primary display is covered.",
         "protection_mode",
+    ),
+    TutorialStep(
+        "Preview your protection",
+        "Click Home, then Test Protection (5 seconds). It covers your screen briefly; "
+        "you can dismiss it early. A preview does not turn on monitoring.",
+        "home",
+    ),
+    TutorialStep(
+        "Setup walkthrough complete",
+        "",
+        None,
         next_enabled=True,
-        next_label="Close guide",
+        next_label="Finish",
     ),
 )
 
@@ -79,6 +104,7 @@ class TutorialController:
         self._redraw = False
         self._save_failed = False
         self._last_render = None
+        self._reset_preview()
 
     @property
     def active(self) -> bool:
@@ -89,12 +115,30 @@ class TutorialController:
         self.context = context or TutorialContext()
         self._reviewing = self._redraw = self._save_failed = False
         self._last_render = None
+        self._reset_preview()
         self.update(self.context)
 
     def update(self, context: TutorialContext) -> None:
         self.context = context
         if not self.active:
             return
+        if self.index in (5, 6) and context.protection_dirty:
+            self.index = 4
+            self._reset_preview()
+        if self.index == 5 and self._test_in_progress:
+            if context.test_requested:
+                if context.protection_error or not context.protection_active:
+                    self._test_failed = True
+                    self._test_failure_reason = context.protection_error or "Protection was not displayed."
+                elif context.actual_mode:
+                    self._test_observed = True
+                    self._test_failed = False
+                    self._test_failure_reason = ""
+                    self._preview_result = context.actual_mode
+                    if context.actual_mode != context.selected_mode:
+                        self._preview_result += f" (fallback for {context.selected_mode})"
+            elif context.automatic_requested or context.manual_requested:
+                self._test_interrupted = True
         if self.index in (1, 2, 3) and not context.camera_ready:
             self.index = 0
             self._reviewing = False
@@ -121,10 +165,14 @@ class TutorialController:
         else:
             # Keeping an existing zone is an explicit choice, never an automatic skip.
             self.index = 4 if self.index == 2 and not self.context.draft_ready else self.index + 1
+            if self.index == 5:
+                self._reset_preview()
             self._reviewing = False
             self.update(self.context)
 
     def back(self) -> None:
+        if self._test_in_progress:
+            return
         if self.index is not None and self.index > 0:
             self.index = 2 if self.index == 4 else self.index - 1
             self._reviewing = True
@@ -147,6 +195,36 @@ class TutorialController:
         if self.index == 3:
             self._save_failed = True
             self._render()
+
+    def protection_saved(self, context: TutorialContext) -> None:
+        if self.index in (4, 5, 6) and context.protection_open and not context.protection_dirty:
+            self.index = 5
+            self._reviewing = False
+            self._reset_preview()
+        self.update(context)
+
+    def test_started(self, context: TutorialContext) -> None:
+        if self.index == 5 and context.test_requested:
+            self._reset_preview()
+            self._test_in_progress = True
+        self.update(context)
+
+    def test_finished(self, context: TutorialContext) -> None:
+        if self.index == 5 and self._test_in_progress:
+            self._test_in_progress = False
+            self._test_interrupted |= context.automatic_requested or context.manual_requested
+            if (self._test_observed and not self._test_failed and not self._test_interrupted
+                    and not context.test_requested and not context.protection_error):
+                self._preview_complete = True
+                self.index = 6
+                self._reviewing = False
+        self.update(context)
+
+    def _reset_preview(self) -> None:
+        self._test_in_progress = self._test_observed = self._test_failed = False
+        self._test_interrupted = self._preview_complete = False
+        self._preview_result = ""
+        self._test_failure_reason = ""
 
     def skip(self) -> None:
         if self.active:
@@ -184,6 +262,48 @@ class TutorialController:
         if self.index == 3 and self._save_failed:
             return replace(step, instruction="Your zone was not saved. Check the error below and retry Save Zone. "
                 "Your draft has been kept; any saved zone is unchanged.")
+        if self.index == 4 and context.protection_open:
+            if context.protection_save_failed:
+                return replace(step, target="save_protection", instruction=
+                    "Protection settings were not saved. Check the error below and retry Save Protection Settings, "
+                    "or Discard changes to keep the saved settings.")
+            if context.protection_dirty:
+                return replace(step, target="save_protection", instruction=
+                    "Click Save Protection Settings to apply your changes, or Discard changes to keep the saved settings.")
+            return replace(step, target="protection_choices", next_enabled=True, next_label="Keep current settings",
+                instruction="Choose a mode below and click Save Protection Settings. "
+                "Or choose Keep current settings to use the saved mode and shortcut.")
+        if self.index == 5:
+            if self._test_in_progress or context.test_requested:
+                return replace(step, target=None, back_enabled=False,
+                    instruction="The five-second preview is running. Use Dismiss Test or your shortcut to end it early. "
+                    "Real protection requests stay in place.")
+            if context.automatic_requested or context.manual_requested:
+                return replace(step, target=None, instruction=
+                    "Real protection is already active. A preview can run when those requests have cleared. "
+                    "You can skip the guide without changing protection.")
+            if self._preview_complete:
+                return replace(step, target=None, next_enabled=True, next_label="View summary",
+                    instruction=f"Preview showed {self._preview_result}. Choose View summary or run another preview.")
+            if self._test_failed or self._test_interrupted or context.protection_error:
+                reason = self._test_failure_reason or context.protection_error
+                if self._test_interrupted:
+                    reason = "A real protection request interrupted the preview."
+                return replace(step, target="test_protection" if context.home_open else "home",
+                    instruction=f"The preview did not complete successfully. {reason} "
+                    "Return Home and retry Test Protection (5 seconds).")
+            if context.home_open:
+                return replace(step, target="test_protection", instruction=
+                    "Click Test Protection (5 seconds). Your screen is covered briefly; use Dismiss Test or your "
+                    "shortcut to end it early. Monitoring is unchanged.")
+        if self.index == 6:
+            shortcut = context.hotkey + ("" if context.hotkey_available else " (check shortcut status)")
+            summary = (
+                f"Zone: {'saved and loaded' if context.saved_zone else 'not configured'}. "
+                f"Mode: {context.selected_mode}. Shortcut: {shortcut}.\n"
+                f"Preview showed {self._preview_result}.\n{context.runtime_summary}"
+            )
+            return replace(step, instruction=summary)
         return step
 
     def _render(self) -> None:

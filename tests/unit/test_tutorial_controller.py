@@ -58,8 +58,69 @@ class TutorialControllerTests(unittest.TestCase):
         self.guide.next()
         self.assertEqual(self.guide.index, 4)
         self.guide.next()
+        self.assertTrue(self.guide.active)
+        self.assertEqual(self.guide.index, 4)  # Protection settings have not been confirmed.
+        context = replace(context, protection_open=True)
+        self.guide.update(context)
+        self.guide.next()
+        self.assertEqual(self.guide.index, 5)
+        self.guide.test_started(replace(context, test_requested=True, protection_active=True,
+                                        actual_mode="Privacy Overlay"))
+        self.guide.test_finished(context)
+        self.assertEqual(self.guide.index, 6)
+        self.guide.next()
         self.assertFalse(self.guide.active)
         self.hide.assert_called_once_with()
+
+    def test_preview_failure_interruption_and_stale_test_cannot_complete_guide(self):
+        context = replace(self.live, zone_open=True, saved_zone=True, protection_open=True)
+        self.guide.start(context)
+        self.guide.next()
+        self.guide.next()
+        failed = replace(context, test_requested=True, protection_error="Surface failed")
+        self.guide.test_started(failed)
+        self.guide.test_finished(context)
+        self.assertEqual(self.guide.index, 5)
+
+        shown = replace(context, test_requested=True, protection_active=True, actual_mode="Privacy Overlay")
+        self.guide.test_started(shown)
+        self.guide.update(replace(shown, test_requested=False, automatic_requested=True))
+        self.guide.test_finished(context)
+        self.assertEqual(self.guide.index, 5)
+
+        self.guide.skip()
+        self.guide.start(shown)
+        self.guide.next()
+        self.guide.next()
+        self.guide.test_finished(context)  # An old preview from before replay is not counted.
+        self.assertEqual(self.guide.index, 5)
+
+    def test_fallback_summary_records_actual_mode_and_current_runtime(self):
+        context = replace(self.live, zone_open=True, saved_zone=True, protection_open=True,
+                          selected_mode="Decoy Website", runtime_summary="Monitoring: inactive. Protection: Inactive.")
+        self.guide.start(context)
+        self.guide.next()
+        self.guide.next()
+        self.guide.test_started(replace(context, test_requested=True, protection_active=True,
+                                        actual_mode="Privacy Overlay"))
+        self.guide.test_finished(context)
+        summary = self.show.call_args.args[0].instruction
+        self.assertIn("Privacy Overlay (fallback for Decoy Website)", summary)
+        self.assertIn("Monitoring: inactive. Protection: Inactive.", summary)
+        self.guide.update(replace(context, runtime_summary="Protection: Privacy Overlay (Manual)."))
+        self.assertIn("(Manual)", self.show.call_args.args[0].instruction)
+
+    def test_unsaved_protection_settings_block_keep_and_invalidate_old_preview(self):
+        context = replace(self.live, zone_open=True, saved_zone=True, protection_open=True)
+        self.guide.start(context)
+        self.guide.next()
+        self.guide.update(replace(context, protection_dirty=True))
+        self.guide.next()
+        self.assertEqual(self.guide.index, 4)
+        self.guide.protection_saved(context)
+        self.assertEqual(self.guide.index, 5)
+        self.guide.update(replace(context, protection_dirty=True))
+        self.assertEqual(self.guide.index, 4)
 
     def test_save_step_requires_success_event_not_existing_saved_zone(self):
         context = replace(self.live, zone_open=True, saved_zone=True)
