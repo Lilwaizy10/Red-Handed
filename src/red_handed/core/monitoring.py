@@ -315,4 +315,7 @@ class MonitoringController:
                 self._pending = None
             finally:
                 # Attempt detector cleanup even if stopping raises an exception.
-                self.detector.close()
+                #self.detector.close()
+                close_detector = getattr(self.detector, "close", None)
+                if callable(close_detector):
+                    close_detector()
