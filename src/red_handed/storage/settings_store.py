@@ -4,6 +4,7 @@ from dataclasses import asdict
 import json
 import os
 from pathlib import Path
+import shutil
 import tempfile
 
 from red_handed.core.settings import MonitoringSettings, Sensitivity, ProtectionMode, ProtectionSettings
@@ -14,6 +15,17 @@ from red_handed.core.applications import ApplicationSettings, ProtectedApplicati
 def default_settings_path() -> Path:
     base = os.environ.get("LOCALAPPDATA")
     return (Path(base) if base else Path.home() / "AppData" / "Local") / "Red-Handed" / "settings.json"
+
+
+def backup_damaged_file(path: Path) -> Path:
+    """Copy an unreadable file aside (never overwriting an earlier backup)."""
+    target = path.with_name(path.name + ".bad")
+    n = 1
+    while target.exists():
+        target = path.with_name(f"{path.name}.bad{n}")
+        n += 1
+    shutil.copy2(path, target)
+    return target
 
 
 class SettingsStore:
@@ -32,11 +44,12 @@ class SettingsStore:
         # Step 1: the file itself must be readable JSON in a format we know.
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
-            if not isinstance(data, dict) or data.get("version") != 1:
+            if (not isinstance(data, dict) or type(data.get("version")) is not int
+                    or data["version"] != 1):
                 raise ValueError("Unsupported settings format.")
         except FileNotFoundError:
             return MonitoringSettings()
-        except (OSError, ValueError) as error:
+        except (OSError, ValueError, RecursionError) as error:
             self.last_error = f"Settings could not be loaded; defaults are in use. {error}"
             return MonitoringSettings()
 
@@ -98,31 +111,42 @@ class SettingsStore:
             raise ValueError("Invalid settings.")
         data = asdict(settings)
         data["version"] = 1
-        # Additive v1 extension: old Phase 3 files and APIs remain compatible.
-        # Updating timing/zone settings must not erase a previously saved hotkey.
-        if protection is None:
+
+        # Read the existing file once. Valid optional blocks are carried over so
+        # saving timing/zone settings never erases a saved hotkey or app list.
+        # If anything in the old file is unreadable, a copy is kept before replacing.
+        old, damaged = None, False
+        if self.path.exists():
             try:
-                old = json.loads(self.path.read_text(encoding='utf-8'))
-                if isinstance(old, dict) and 'protection' in old:
-                    protection = self._parse_protection(old['protection'])
-            except (FileNotFoundError, ValueError, TypeError, KeyError):
-                pass  # A deliberate Save may repair malformed settings.
+                old = json.loads(self.path.read_text(encoding="utf-8"))
+                if (not isinstance(old, dict) or type(old.get("version")) is not int
+                        or old["version"] != 1):
+                    raise ValueError("Unsupported settings format.")
+            except (ValueError, RecursionError):
+                old, damaged = None, True
+            except OSError:
+                old = None
+        if old is not None:
+            if protection is None and "protection" in old:
+                try:
+                    protection = self._parse_protection(old["protection"])
+                except (ValueError, TypeError, KeyError):
+                    damaged = True
+            if applications is None and "applications" in old:
+                try:
+                    applications = self._parse_applications(old["applications"])
+                except (ValueError, TypeError, KeyError):
+                    damaged = True
+
         if protection is not None:
             if not isinstance(protection, ProtectionSettings):
                 raise ValueError('Invalid protection settings.')
             data['protection'] = asdict(protection)
-        # Same rule for applications: saving other settings must not erase them.
-        if applications is None:
-            try:
-                old = json.loads(self.path.read_text(encoding='utf-8'))
-                if isinstance(old, dict) and 'applications' in old:
-                    applications = self._parse_applications(old['applications'])
-            except (FileNotFoundError, ValueError, TypeError, KeyError):
-                pass
         if applications is not None:
             if not isinstance(applications, ApplicationSettings):
                 raise ValueError('Invalid application settings.')
             data['applications'] = asdict(applications)
+
         text = json.dumps(data, indent=2, allow_nan=False) + "\n"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary: Path | None = None
@@ -133,6 +157,8 @@ class SettingsStore:
                 file.write(text)
                 file.flush()
                 os.fsync(file.fileno())
+            if damaged:
+                backup_damaged_file(self.path)  # OSError here aborts the save; original stays
             os.replace(temporary, self.path)
             self.last_error = None
             if protection is not None:

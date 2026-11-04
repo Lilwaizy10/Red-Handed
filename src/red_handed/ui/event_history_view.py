@@ -65,35 +65,37 @@ class EventHistoryView(ttk.LabelFrame):
 
         self.refresh(force=True)
 
+    @staticmethod
+    def _format_time(timestamp):
+        try:
+            return timestamp.astimezone().strftime("%Y-%m-%d %H:%M:%S %z")
+        except (OverflowError, OSError, ValueError):
+            return timestamp.isoformat(sep=" ")  # local conversion unavailable
+
     def refresh(self, force=False):
         """Refresh only when the recorder changes, avoiding constant redraws."""
-        self.notice.set(self.recorder.last_error or "")
-
+        error = self.recorder.last_error
+        if error:
+            self.notice.set(error)
+        elif force or self._revision != self.recorder.revision:
+            self.notice.set("")
         if not force and self._revision == self.recorder.revision:
             return
 
         # Read the revision before the snapshot. If the writer changes afterward,
         # the next poll notices the newer revision and refreshes again.
         revision = self.recorder.revision
-        events = self.recorder.events()
+        # Build every row first so a formatting failure can't leave a blank table.
+        rows = [(self._format_time(event.timestamp), event.event_type.value,
+                 event.action.value,
+                 event.protection_mode.value if event.protection_mode else "--")
+                for event in self.recorder.events()]
 
         children = self.table.get_children()
         if children:
             self.table.delete(*children)
-
-        # EventRecorder returns chronological order with stable timestamp ties.
-        for event in events:
-            self.table.insert(
-                "",
-                tk.END,
-                values=(
-                    event.timestamp.astimezone().strftime("%Y-%m-%d %H:%M:%S %z"),
-                    event.event_type.value,
-                    event.action.value,
-                    event.protection_mode.value if event.protection_mode else "--",
-                ),
-            )
-
+        for row in rows:
+            self.table.insert("", tk.END, values=row)
         self._revision = revision
 
     def clear_history(self):

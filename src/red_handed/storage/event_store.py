@@ -6,7 +6,7 @@ from pathlib import Path
 import tempfile
 
 from red_handed.core.events import PrivacyEvent
-from red_handed.storage.settings_store import default_settings_path
+from red_handed.storage.settings_store import default_settings_path, backup_damaged_file
 
 
 class EventStore:
@@ -57,5 +57,9 @@ class EventStore:
         self._write([*events, event])
 
     def clear(self):
-        # FR11.4: explicit confirmed Clear may replace a malformed history file.
+        # FR11.4: a confirmed Clear may replace a malformed file, but keeps a copy.
+        if self.path.exists():
+            self.load()
+            if self.last_error:
+                backup_damaged_file(self.path)
         self._write([])
