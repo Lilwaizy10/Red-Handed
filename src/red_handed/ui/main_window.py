@@ -796,6 +796,8 @@ class MainWindow:
 
     def retry_camera(self) -> None:
         """FR13.4 - Let the user retry after a camera error."""
+        if self._closed or self.controller.state.monitoring_status is MonitoringStatus.ACTIVE:
+            return
         if self._camera_check_job is not None:
             self.root.after_cancel(self._camera_check_job)
             self._camera_check_job = None
@@ -819,6 +821,8 @@ class MainWindow:
 
     def start_monitoring(self) -> None:
         """FR1.1 / FR1.2 - Start frame retrieval after camera verification."""
+        if self._closed:
+            return
         self._preview_error = False
         if not self.controller.start_monitoring():
             self.message_text.set(
@@ -836,13 +840,16 @@ class MainWindow:
         self._schedule_next_frame()
 
     def _schedule_next_frame(self) -> None:
-        if self.controller.state.monitoring_status is MonitoringStatus.ACTIVE:
+        if (not self._closed and self._frame_job is None
+                and self.controller.state.monitoring_status is MonitoringStatus.ACTIVE):
             self._frame_job = self.root.after(
                 self.FRAME_INTERVAL_MS, self._update_preview
             )
 
     def _update_preview(self) -> None:
         self._frame_job = None
+        if self._closed or self.controller.state.monitoring_status is not MonitoringStatus.ACTIVE:
+            return
         frame = self.controller.read_frame()
         self._refresh_detection()
         if frame is None:
