@@ -27,7 +27,11 @@ def main() -> None:
                 if controller is not None:
                     controller.close()
             finally:
-                root.destroy()
+                try:
+                    root.destroy()
+                except tk.TclError:
+                    # The window may already have cleaned up and destroyed Tk.
+                    pass
 
 
 if __name__ == "__main__":

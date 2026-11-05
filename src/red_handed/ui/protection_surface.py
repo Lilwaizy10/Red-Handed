@@ -23,18 +23,23 @@ class TkProtectionSurface:
         mode = ProtectionMode(mode)
         if self.window is None:
             self.window = tk.Toplevel(self.root)
-            self.window.withdraw()
-            self.window.title('Red-Handed Protection')
-            self.window.overrideredirect(True)
-            self.window.attributes('-alpha', 1.0)
-            self.window.attributes('-topmost', True)
-            self.window.protocol('WM_DELETE_WINDOW', self._close_app)
-            self.title = tk.Label(self.window, font=('Segoe UI', 26, 'bold'))
-            self.title.pack(expand=True)
-            self.details = tk.Label(self.window, font=('Segoe UI', 11), wraplength=800)
-            self.details.pack(pady=8)
-            self.controls = tk.Frame(self.window)
-            self.controls.pack(pady=(0, 20))
+            try:
+                self.window.withdraw()
+                self.window.title('Red-Handed Protection')
+                self.window.overrideredirect(True)
+                self.window.attributes('-alpha', 1.0)
+                self.window.attributes('-topmost', True)
+                self.window.protocol('WM_DELETE_WINDOW', self._close_app)
+                self.title = tk.Label(self.window, font=('Segoe UI', 26, 'bold'))
+                self.title.pack(expand=True)
+                self.details = tk.Label(self.window, font=('Segoe UI', 11), wraplength=800)
+                self.details.pack(pady=8)
+                self.controls = tk.Frame(self.window)
+                self.controls.pack(pady=(0, 20))
+            except Exception:
+                # Never reuse a partially configured window.
+                self.close()
+                raise
         window = self.window
         background = '#000000' if mode is ProtectionMode.SCREEN_BLACKOUT else '#17202b'
         window.configure(background=background)

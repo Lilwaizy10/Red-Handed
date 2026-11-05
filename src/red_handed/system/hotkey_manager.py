@@ -1,5 +1,3 @@
-# TODO [FR10]: Manage the configurable emergency privacy hotkey.
-
 """FR10: validated hotkeys, transactional replacement and a Windows backend."""
 
 from concurrent.futures import Future

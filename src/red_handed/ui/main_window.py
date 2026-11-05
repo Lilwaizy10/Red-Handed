@@ -1,5 +1,3 @@
-# TODO [FR1, FR12]: Present monitoring controls and system status.
-
 """Tkinter dashboard: status, monitoring controls, preview and calibration."""
 
 from __future__ import annotations
@@ -119,41 +117,47 @@ class MainWindow:
         event_path = self.settings_store.path.with_name("events.json")
         self.recorder = EventRecorder(EventStore(event_path))
 
-        self.controller.recorder = self.recorder
-        self.protection.recorder = self.recorder
+        try:
+            self.controller.recorder = self.recorder
+            self.protection.recorder = self.recorder
 
-        self.history_view = EventHistoryView(self.content, self.recorder)
-        self.history_view.grid(
-            row=8, column=0, sticky="nsew", pady=(8, 0)
-        )
-        self.history_view.grid_remove()
-
-        # An enabled gate starts blocked until a foreground app is known.
-        self.protection.set_application_allowed(
-            ApplicationAwarePolicy.allows(
-                self.application_settings,
-                self._last_external_application,
+            self.history_view = EventHistoryView(self.content, self.recorder)
+            self.history_view.grid(
+                row=8, column=0, sticky="nsew", pady=(8, 0)
             )
-        )
-        self.root.protocol("WM_DELETE_WINDOW", self.close)
-        self._camera_check_job = self.root.after(100, self._initial_camera_check)
-        self.controller.attach_protection(self.protection)
+            self.history_view.grid_remove()
 
-        if self._enable_hotkeys:
-            try:
-                self._ensure_hotkeys()
-                self.hotkeys.configure(self.protection_settings.hotkey)
-            except Exception as error:
-                # Startup conflicts must not disable the onscreen emergency button.
-                self._hotkey_error = str(error)
+            # An enabled gate starts blocked until a foreground app is known.
+            self.protection.set_application_allowed(
+                ApplicationAwarePolicy.allows(
+                    self.application_settings,
+                    self._last_external_application,
+                )
+            )
+            self.root.protocol("WM_DELETE_WINDOW", self.close)
+            self._camera_check_job = self.root.after(100, self._initial_camera_check)
+            self.controller.attach_protection(self.protection)
 
-            self._hotkey_job = self.root.after(50, self._poll_hotkeys)
+            if self._enable_hotkeys:
+                try:
+                    self._ensure_hotkeys()
+                    self.hotkeys.configure(self.protection_settings.hotkey)
+                except Exception as error:
+                    # Startup conflicts must not disable the onscreen emergency button.
+                    self._hotkey_error = str(error)
 
-        self._refresh_protection()
-        # Poll independently of hotkeys and camera monitoring.
-        self._foreground_job = self.root.after(
-            250, self._poll_foreground_application
-        )
+                self._hotkey_job = self.root.after(50, self._poll_hotkeys)
+
+            self._refresh_protection()
+            # Poll independently of hotkeys and camera monitoring.
+            self._foreground_job = self.root.after(
+                250, self._poll_foreground_application
+            )
+        except Exception:
+            # A failed final UI setup must not strand already-created services
+            # (hotkey, event writer, protection surface).
+            self.close()
+            raise
 
     def _configure_window(self) -> None:
         self.root.title("Red-Handed")
