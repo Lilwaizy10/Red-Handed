@@ -2,9 +2,8 @@
 
 Red-Handed is a Windows desktop privacy-protection system intended to reduce shoulder-surfing by detecting additional people within a configured privacy zone and activating a selected screen-protection mode.
 
-**Current status:** Phase 5 application/history integration and guided setup are implemented.
-See [Phase 5 validation](docs/phase5_testing.md) and the
-[tutorial checks and presentation script](docs/tutorial_testing.md).
+**Current status:** Phase 6 handoff. See the [final report](docs/final_report.md) for validation results and open checks, and the
+[traceability matrix](docs/traceability.md) for requirements and evidence.
 
 **Initial target:** 64-bit Windows 10 and Windows 11
 
@@ -32,6 +31,13 @@ $env:PYTHONPATH = (Resolve-Path .\src).Path
 .\.venv\Scripts\python.exe -B -m unittest discover -s tests/unit -v
 .\.venv\Scripts\python.exe -B -m unittest discover -s tests/integration -v
 ```
+After installing the dependencies, you can also double-click
+`launch_red_handed.bat`. The launcher uses `.venv\Scripts\python.exe` and
+shows a message if the virtual environment is missing.
+
+For a walkthrough, use the [demo checklist](docs/demo_checklist.md).
+The synthetic demo exercises the interface and protection flow. It does not
+measure live face detection accuracy.
 
 ## Guided setup
 
@@ -135,6 +141,23 @@ Clear History requires confirmation and persists across restart.
 
 History stores event metadata only. Recording errors are displayed in the
 history panel and do not disable screen protection.
+
+## Privacy and limitations
+
+The app processes camera frames locally. Its history stores event metadata,
+not webcam images or video. Settings and history are stored in
+`%LOCALAPPDATA%\Red-Handed` by default.
+
+MediaPipe Tasks can send performance and usage telemetry. Local camera
+processing does not mean that the app and its dependencies make no network
+requests. Decoy Website uses a local page, but Chrome or Selenium driver
+setup may require network access.
+
+The app assumes the largest detected face is the primary user. It does not
+identify people. Sensitivity is disabled because the team has not defined
+how it should affect detection. Protection covers the primary display and
+is not a Windows lock screen. Decoy Website uses a maximized browser;
+Privacy Overlay is used while the decoy starts or is unavailable.
 
 ## Folder structure
 
